@@ -1,7 +1,10 @@
-/* ==========================================
-   YOUTUBE AMBIENT FLOW
-   Playback-Aware Video Analyzer
-========================================== */
+/**
+ * YouTube Ambient Flow
+ * Video Analyzer
+ *
+ * Coordinates video detection, frame sampling, scene detection,
+ * color extraction, and dynamic YouTube theming.
+ */
 
 (() => {
   "use strict";
@@ -10,664 +13,619 @@
 
   class VideoAnalyzer {
     constructor() {
-      this.running = false;
-      this.destroyed = false;
-      this.subscribed = false;
+      this.started = false;
+      this.enabled = true;
+      this.isAnalyzing = false;
+      this.isPlaying = false;
 
-      this.settings = { ...AF.DEFAULTS };
+      this.currentVideo = null;
+      this.lastPlaybackState = "STOPPED";
+      this.blockedVideo = null;
 
-      this.video = null;
-      this.timer = null;
-      this.sampling = false;
-      this.lastColor = null;
-      this.lastAppliedColor = null;
-      this.lastSavedAt = 0;
+      this.sampleTimer = null;
+      this.generation = 0;
 
-      this.videoListeners = [];
-      this.detectorListeners = [];
+      this.settings = {
+        enabled: true,
+        samplingInterval: 700,
+        sceneDetection: true,
+        sceneThreshold: 18,
+        ambientGlow: true,
+        smoothTransitions: true,
+        performanceMode: "balanced",
+        backgroundStyle: "gradient",
+        intensity: 0.65,
+        blur: 80,
+      };
 
-      this.sampleGeneration = 0;
-
-      this.sampleInterval = 500;
-
-      this.handlePlay = this.handlePlay.bind(this);
-      this.handlePause = this.handlePause.bind(this);
-      this.handleEnded = this.handleEnded.bind(this);
-      this.handleVideoChange = this.handleVideoChange.bind(this);
-      this.handleSettingsChange = this.handleSettingsChange.bind(this);
-      this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
+      this.unsubscribers = [];
+      this.stats = {
+        samples: 0,
+        successfulSamples: 0,
+        failedSamples: 0,
+        sceneChanges: 0,
+        lastSampleTime: null,
+        lastColor: null,
+        startedAt: null,
+      };
     }
-
-    /* ======================================
-       INITIALIZATION
-    ====================================== */
 
     async loadSettings() {
       try {
-        this.settings = await AF.storage.getAll();
-      } catch (error) {
-        console.error("[Ambient Flow] Settings loading failed:", error);
+        if (AF.storage?.getAll) {
+          const stored = await AF.storage.getAll();
 
-        this.settings = { ...AF.DEFAULTS };
+          if (stored && typeof stored === "object") {
+            this.settings = {
+              ...this.settings,
+              ...stored,
+            };
+          }
+        }
+
+        this.enabled = this.settings.enabled !== false;
+      } catch (error) {
+        console.warn("[Ambient Flow] Could not load analyzer settings:", error);
       }
     }
 
     configureEngines() {
-      const mode = AF.MODES?.[this.settings.mode] || AF.MODES?.cinematic || {};
-
-      const effectiveSettings = {
-        ...this.settings,
-
-        intensity: this.settings.intensity ?? mode.intensity ?? 68,
-
-        saturation: this.settings.saturation ?? mode.saturation ?? 72,
-
-        blur: this.settings.blur ?? mode.blur ?? 54,
-
-        transitionMs: this.settings.transitionMs ?? mode.transitionMs ?? 900,
-      };
-
-      this.sampleInterval = Math.max(
-        250,
-        Number(this.settings.sampleInterval) || 1000,
-      );
-
-      AF.performanceEngine?.setMode(
-        this.settings.performanceMode || "balanced",
-      );
-
-      AF.colorExtractor?.setEnabled(Boolean(this.settings.enabled));
-
-      AF.sceneDetector?.setEnabled(Boolean(this.settings.sceneDetection));
-
-      AF.readabilityEngine?.setEnabled(Boolean(this.settings.readability));
-
-      AF.ambientGlow?.setEnabled(Boolean(this.settings.ambientGlow));
-
-      AF.colorExtractor?.setSmoothing(
-        this.settings.mode === "relax" ? 0.12 : 0.22,
-      );
-
-      if (this.settings.focusMode) {
-        AF.focusMode?.enable();
-      } else {
-        AF.focusMode?.disable();
+      if (AF.sceneDetector) {
+        AF.sceneDetector.setThreshold?.(this.settings.sceneThreshold || 18);
       }
 
-      this.effectiveSettings = effectiveSettings;
+      if (AF.ambientGlow) {
+        AF.ambientGlow.setEnabled?.(this.settings.ambientGlow !== false);
+
+        AF.ambientGlow.setIntensity?.(this.settings.intensity ?? 0.65);
+
+        AF.ambientGlow.setBlur?.(this.settings.blur ?? 80);
+      }
     }
 
-    /* ======================================
-       EVENT SUBSCRIPTIONS
-    ====================================== */
-
-    subscribe() {
-      if (this.subscribed) return;
-
-      this.subscribed = true;
-
+    subscribeToDetector() {
       const detector = AF.videoDetector;
 
-      if (detector?.on) {
-        const events = [
-          "videoDetected",
-          "playbackState",
-          "videoMetadata",
-          "videoEnded",
-        ];
+      if (!detector?.on) {
+        console.warn("[Ambient Flow] VideoDetector is unavailable.");
+        return;
+      }
 
-        for (const event of events) {
-          const callback = (data) => {
-            if (event === "videoDetected") {
-              this.handleVideoChange(data?.video);
-            }
+      const subscriptions = {
+        videoDetected: (event) => {
+          this.handleVideoChange(event?.video);
+        },
 
-            if (event === "playbackState") {
-              this.syncPlaybackState();
-            }
+        videoRemoved: (event) => {
+          this.handleVideoRemoved(event?.video);
+        },
 
-            if (event === "videoMetadata") {
-              this.syncPlaybackState();
-            }
+        videoPlaying: (event) => {
+          this.handleVideoChange(event?.video);
+          this.syncPlaybackState(true);
+        },
 
-            if (event === "videoEnded") {
-              this.stopSampling();
-              this.restoreYouTube();
-            }
-          };
+        videoPaused: () => {
+          this.syncPlaybackState(false);
+        },
 
-          detector.on(event, callback);
+        videoEnded: () => {
+          this.syncPlaybackState(false);
+        },
 
-          this.detectorListeners.push({
-            target: detector,
-            event,
-            callback,
-          });
+        videoBuffering: () => {
+          // Do not restore the theme for short buffering events.
+          // Playback state is checked again when playback resumes.
+        },
+
+        videoEmptied: () => {
+          this.syncPlaybackState(false);
+        },
+
+        videoSeeking: () => {
+          // Avoid sampling while seeking.
+          this.stopSampling();
+        },
+
+        videoReady: (event) => {
+          this.handleVideoChange(event?.video);
+          this.syncPlaybackState();
+        },
+
+        playbackChange: (event) => {
+          this.handleVideoChange(event?.video);
+          this.syncPlaybackState(event?.isPlaying);
+        },
+
+        playbackCheck: (event) => {
+          this.syncPlaybackState(event?.isPlaying);
+        },
+
+        navigation: () => {
+          this.handleNavigation();
+        },
+      };
+
+      Object.entries(subscriptions).forEach(([eventName, callback]) => {
+        const unsubscribe = detector.on(eventName, callback);
+
+        if (typeof unsubscribe === "function") {
+          this.unsubscribers.push(unsubscribe);
         }
-      }
-
-      if (AF.youtubeDetector?.onChange) {
-        const callback = () => {
-          this.handleVideoChange();
-        };
-
-        AF.youtubeDetector.onChange(callback);
-
-        this.detectorListeners.push({
-          target: AF.youtubeDetector,
-          event: "change",
-          callback,
-        });
-      }
-
-      window.addEventListener(
-        AF.EVENTS?.SETTINGS_CHANGED || "af:settings-changed",
-        this.handleSettingsChange,
-      );
-
-      document.addEventListener(
-        "visibilitychange",
-        this.handleVisibilityChange,
-      );
+      });
     }
-
-    unsubscribe() {
-      for (const item of this.detectorListeners) {
-        if (typeof item.target.off === "function") {
-          item.target.off(item.event, item.callback);
-        }
-      }
-
-      this.detectorListeners = [];
-      this.subscribed = false;
-
-      window.removeEventListener(
-        AF.EVENTS?.SETTINGS_CHANGED || "af:settings-changed",
-        this.handleSettingsChange,
-      );
-
-      document.removeEventListener(
-        "visibilitychange",
-        this.handleVisibilityChange,
-      );
-    }
-
-    /* ======================================
-       VIDEO DETECTION
-    ====================================== */
 
     findVideo() {
-      const detected = AF.videoDetector?.getState?.();
-
-      const detectedVideo = detected?.video || detected?.element || null;
-
-      if (
-        detectedVideo instanceof HTMLVideoElement &&
-        detectedVideo.isConnected
-      ) {
-        return detectedVideo;
+      if (AF.videoDetector?.currentVideo) {
+        return AF.videoDetector.currentVideo;
       }
 
-      const videos = Array.from(document.querySelectorAll("video"));
-
-      return (
-        videos.find(
-          (video) =>
-            video.isConnected &&
-            video.readyState >= 1 &&
-            video.videoWidth > 0 &&
-            video.videoHeight > 0,
-        ) || null
-      );
-    }
-
-    handleVideoChange(video = null) {
-      const nextVideo =
-        video instanceof HTMLVideoElement && video.isConnected
-          ? video
-          : this.findVideo();
-
-      if (nextVideo === this.video) {
-        this.syncPlaybackState();
-        return;
-      }
-
-      this.detachVideoListeners();
-      this.stopSampling();
-
-      this.video = nextVideo;
-
-      if (!this.video) {
-        this.restoreYouTube();
-        return;
-      }
-
-      this.attachVideoListeners();
-
-      this.syncPlaybackState();
-    }
-
-    attachVideoListeners() {
-      if (!this.video) return;
-
-      const events = [
-        ["play", this.handlePlay],
-        ["playing", this.handlePlay],
-        ["pause", this.handlePause],
-        ["ended", this.handleEnded],
-        ["emptied", this.handlePause],
-        ["waiting", this.handlePause],
+      const selectors = [
+        "#movie_player video",
+        "ytd-player video",
+        "ytd-reel-video-renderer video",
+        "ytd-shorts video",
       ];
 
-      for (const [event, callback] of events) {
-        this.video.addEventListener(event, callback);
+      for (const selector of selectors) {
+        const video = document.querySelector(selector);
 
-        this.videoListeners.push({
-          event,
-          callback,
-        });
-      }
-    }
-
-    detachVideoListeners() {
-      if (this.video) {
-        for (const item of this.videoListeners) {
-          this.video.removeEventListener(item.event, item.callback);
+        if (video instanceof HTMLVideoElement && video.isConnected) {
+          return video;
         }
       }
 
-      this.videoListeners = [];
+      return null;
     }
 
-    /* ======================================
-       PLAYBACK STATE
-    ====================================== */
+    isVideoPlaying(video = this.currentVideo) {
+      if (!video || !video.isConnected) {
+        return false;
+      }
 
-    isPlaying() {
-      const video = this.video;
-
-      return Boolean(
-        video &&
-        video.isConnected &&
+      return (
         !video.paused &&
         !video.ended &&
         !video.seeking &&
-        video.readyState >= 2 &&
-        !document.hidden,
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        !document.hidden
       );
     }
 
-    handlePlay() {
-      this.syncPlaybackState();
-    }
-
-    handlePause() {
-      this.stopSampling();
-      this.restoreYouTube();
-    }
-
-    handleEnded() {
-      this.stopSampling();
-      this.restoreYouTube();
-    }
-
-    handleVisibilityChange() {
-      if (document.hidden) {
-        this.stopSampling();
-        this.restoreYouTube();
-      } else {
-        this.syncPlaybackState();
-      }
-    }
-
-    syncPlaybackState() {
-      if (!this.running || !this.settings.enabled || !this.video) {
-        this.stopSampling();
-        this.restoreYouTube();
+    handleVideoChange(video) {
+      if (!video || !(video instanceof HTMLVideoElement)) {
         return;
       }
 
-      if (this.isPlaying()) {
-        this.startSampling();
-      } else {
+      if (video === this.currentVideo) {
+        return;
+      }
+
+      console.info("[Ambient Flow] Video changed.");
+
+      this.stopSampling();
+
+      this.currentVideo = video;
+      this.blockedVideo = null;
+      this.lastPlaybackState = "STOPPED";
+
+      this.resetAnalysis();
+
+      if (this.isVideoPlaying(video)) {
+        this.syncPlaybackState(true);
+      }
+    }
+
+    handleVideoRemoved(video) {
+      if (video && this.currentVideo && video !== this.currentVideo) {
+        return;
+      }
+
+      this.stopSampling();
+
+      this.currentVideo = null;
+      this.blockedVideo = null;
+      this.lastPlaybackState = "STOPPED";
+
+      this.restoreYouTube();
+    }
+
+    handleNavigation() {
+      this.stopSampling();
+
+      this.currentVideo = null;
+      this.blockedVideo = null;
+      this.lastPlaybackState = "STOPPED";
+
+      this.resetAnalysis();
+      this.restoreYouTube();
+
+      // YouTube navigation is asynchronous. Recheck after the page updates.
+      setTimeout(() => {
+        if (!this.started) return;
+
+        const video = this.findVideo();
+
+        if (video) {
+          this.handleVideoChange(video);
+          this.syncPlaybackState();
+        }
+      }, 300);
+    }
+
+    syncPlaybackState(reportedState) {
+      if (!this.started || !this.enabled) {
+        return;
+      }
+
+      const video = this.currentVideo || this.findVideo();
+
+      if (video && video !== this.currentVideo) {
+        this.handleVideoChange(video);
+      }
+
+      const playing =
+        typeof reportedState === "boolean"
+          ? reportedState && this.isVideoPlaying(video)
+          : this.isVideoPlaying(video);
+
+      if (playing) {
+        if (this.lastPlaybackState !== "PLAYING") {
+          this.lastPlaybackState = "PLAYING";
+          this.isPlaying = true;
+
+          console.info("[Ambient Flow] Playback started.");
+
+          this.startSampling();
+        } else if (!this.isAnalyzing) {
+          this.startSampling();
+        }
+
+        return;
+      }
+
+      if (this.lastPlaybackState !== "STOPPED") {
+        console.info("[Ambient Flow] Playback stopped.");
+
+        this.lastPlaybackState = "STOPPED";
+        this.isPlaying = false;
+
         this.stopSampling();
         this.restoreYouTube();
       }
     }
-
-    /* ======================================
-       SAMPLING CONTROL
-    ====================================== */
 
     startSampling() {
       if (
-        this.sampling ||
-        !this.running ||
+        !this.started ||
+        !this.enabled ||
         !this.settings.enabled ||
-        !this.isPlaying()
+        !this.currentVideo ||
+        !this.isVideoPlaying(this.currentVideo) ||
+        this.blockedVideo === this.currentVideo ||
+        this.isAnalyzing
       ) {
         return;
       }
 
-      this.sampling = true;
+      this.isAnalyzing = true;
 
-      const generation = ++this.sampleGeneration;
+      const generation = ++this.generation;
 
-      // Analyze immediately when playback begins.
-      this.scheduleSample(0, generation);
+      this.stats.startedAt = Date.now();
+
+      this.scheduleNextSample(generation, 0);
     }
 
     stopSampling() {
-      this.sampling = false;
+      this.isAnalyzing = false;
+      this.generation++;
 
-      // Invalidates any outstanding scheduled sample.
-      this.sampleGeneration++;
-
-      if (this.timer !== null) {
-        clearTimeout(this.timer);
-        this.timer = null;
+      if (this.sampleTimer) {
+        clearTimeout(this.sampleTimer);
+        this.sampleTimer = null;
       }
 
-      AF.sceneDetector?.reset();
+      if (AF.colorExtractor?.reset) {
+        AF.colorExtractor.reset();
+      }
     }
 
-    scheduleSample(delay, generation) {
-      if (!this.sampling || generation !== this.sampleGeneration) {
+    scheduleNextSample(generation, delay) {
+      if (!this.isAnalyzing || generation !== this.generation) {
         return;
       }
 
-      this.timer = setTimeout(async () => {
-        this.timer = null;
-
-        if (
-          !this.sampling ||
-          generation !== this.sampleGeneration ||
-          !this.isPlaying()
-        ) {
-          this.stopSampling();
-          this.restoreYouTube();
-          return;
-        }
-
-        await this.sampleFrame(generation);
-
-        if (
-          this.sampling &&
-          generation === this.sampleGeneration &&
-          this.isPlaying()
-        ) {
-          this.scheduleSample(this.sampleInterval, generation);
-        }
+      this.sampleTimer = setTimeout(() => {
+        this.sampleTimer = null;
+        this.sampleFrame(generation);
       }, delay);
     }
 
-    /* ======================================
-       VIDEO FRAME ANALYSIS
-    ====================================== */
-
     async sampleFrame(generation) {
       if (
-        !this.video ||
-        !this.isPlaying() ||
-        !this.sampling ||
-        generation !== this.sampleGeneration
+        !this.started ||
+        !this.isAnalyzing ||
+        generation !== this.generation
       ) {
         return;
       }
 
-      if (
-        AF.performanceEngine?.canSample &&
-        !AF.performanceEngine.canSample(this.video)
-      ) {
+      if (!this.isVideoPlaying(this.currentVideo)) {
+        this.syncPlaybackState(false);
         return;
       }
 
       try {
-        const result = await AF.colorExtractor.analyze(this.video, {
-          colorSource: this.settings.colorSource,
-        });
+        const result = await AF.colorExtractor?.analyze(this.currentVideo);
 
-        // Playback may have stopped while analysis was running.
-        if (
-          !this.sampling ||
-          generation !== this.sampleGeneration ||
-          !this.isPlaying()
-        ) {
+        if (!this.isAnalyzing || generation !== this.generation) {
           return;
         }
 
-        if (!result) return;
+        this.stats.samples++;
+        this.stats.lastSampleTime = Date.now();
 
-        if (result.success === false) {
-          if (result.reason === "CANVAS_BLOCKED") {
-            console.warn(
-              "[Ambient Flow] Video frame access is blocked by browser security.",
-            );
+        if (!result?.success) {
+          this.stats.failedSamples++;
 
-            this.stopSampling();
+          this.handleAnalysisError(result);
+
+          if (this.isAnalyzing) {
+            this.scheduleNextSample(generation, this.getSamplingInterval());
           }
 
           return;
         }
 
-        const color = this.extractColor(result);
+        this.stats.successfulSamples++;
 
-        if (!color) return;
-
-        this.lastColor = color;
-
-        const sceneResult = AF.sceneDetector?.getLastAnalysis?.();
-
-        const sceneChanged = sceneResult?.changed === true;
-
-        // Apply the latest color on scene changes or meaningful
-        // color updates. Do not wait for a long animation cycle.
-        if (sceneChanged || color !== this.lastAppliedColor) {
-          this.applyColor(color);
+        if (result.sceneChanged) {
+          this.stats.sceneChanges++;
         }
 
-        AF.performanceEngine?.trackFrame?.();
-
-        AF.performanceEngine?.adapt?.();
-
-        this.saveColorPeriodically(color);
+        if (result.color) {
+          this.applyColor(result.color, result);
+        }
       } catch (error) {
-        console.warn("[Ambient Flow] Frame analysis failed:", error);
+        this.stats.failedSamples++;
 
-        if (
-          error?.name === "SecurityError" ||
-          error?.message?.includes("tainted")
-        ) {
-          this.stopSampling();
-          this.restoreYouTube();
-        }
+        console.error("[Ambient Flow] Frame analysis failed:", error);
+      }
+
+      if (this.isAnalyzing && generation === this.generation) {
+        this.scheduleNextSample(generation, this.getSamplingInterval());
       }
     }
 
-    extractColor(result) {
-      if (typeof result === "string") {
-        return result;
+    getSamplingInterval() {
+      const interval = Number(this.settings.samplingInterval);
+
+      if (!Number.isFinite(interval)) {
+        return 700;
       }
 
-      const candidates = [
-        result.color,
-        result.hex,
-        result.dominantColor,
-        result.averageColor,
-        result.palette?.primary,
-      ];
-
-      return (
-        candidates.find(
-          (value) =>
-            typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value),
-        ) || null
-      );
+      return Math.max(300, Math.min(interval, 3000));
     }
 
-    /* ======================================
-       THEME APPLICATION
-    ====================================== */
+    handleAnalysisError(result) {
+      if (
+        result?.error === "CANVAS_BLOCKED" ||
+        result?.code === "CANVAS_BLOCKED"
+      ) {
+        console.warn(
+          "[Ambient Flow] Browser blocked video frame extraction. " +
+            "Ambient analysis is disabled for this video.",
+        );
 
-    applyColor(color) {
-      if (!color || !this.settings.enabled || !this.isPlaying()) {
+        this.blockedVideo = this.currentVideo;
+        this.stopSampling();
+        this.restoreYouTube();
+
         return;
       }
 
-      this.lastAppliedColor = color;
-
-      const palette = AF.paletteEngine.generate(
-        color,
-        this.effectiveSettings || this.settings,
-      );
-
-      const readablePalette = this.settings.readability
-        ? AF.readabilityEngine.optimizePalette(palette)
-        : palette;
-
-      AF.themeEngine.applyPalette(
-        readablePalette,
-        this.effectiveSettings || this.settings,
-      );
-
-      if (this.settings.ambientGlow) {
-        AF.ambientGlow?.update(color, this.effectiveSettings || this.settings);
-
-        AF.ambientGlow?.show();
+      if (result?.error) {
+        console.warn("[Ambient Flow] Analysis error:", result.error);
       }
+    }
+
+    applyColor(color, result = {}) {
+      if (
+        !color ||
+        !Number.isFinite(color.r) ||
+        !Number.isFinite(color.g) ||
+        !Number.isFinite(color.b)
+      ) {
+        return;
+      }
+
+      const hex = result.hex || this.rgbToHex(color);
+
+      this.stats.lastColor = hex;
+
+      const frozen = Boolean(
+        this.settings.frozen || this.settings.freezeBackground,
+      );
+
+      const displayColor =
+        frozen && this.settings.frozenColor
+          ? this.hexToRgb(this.settings.frozenColor)
+          : color;
+
+      if (!displayColor) {
+        return;
+      }
+
+      if (AF.themeEngine) {
+        AF.themeEngine.apply(displayColor, this.settings);
+      }
+
+      if (AF.ambientGlow && this.settings.ambientGlow !== false) {
+        AF.ambientGlow.update(displayColor, this.settings);
+        AF.ambientGlow.updatePosition?.(this.currentVideo);
+        AF.ambientGlow.show();
+      }
+    }
+
+    rgbToHex(color) {
+      const toHex = (value) => {
+        return Math.max(0, Math.min(255, Math.round(value)))
+          .toString(16)
+          .padStart(2, "0");
+      };
+
+      return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
+    }
+
+    hexToRgb(hex) {
+      if (typeof hex !== "string") {
+        return null;
+      }
+
+      const match = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+
+      if (!match) {
+        return null;
+      }
+
+      return {
+        r: parseInt(match[1], 16),
+        g: parseInt(match[2], 16),
+        b: parseInt(match[3], 16),
+      };
     }
 
     restoreYouTube() {
-      this.lastAppliedColor = null;
-
-      // Remove generated theme and restore original page styles.
-      AF.themeEngine?.reset();
-
-      // Remove all ambient lighting.
-      AF.ambientGlow?.hide();
+      AF.ambientGlow?.hide?.();
+      AF.themeEngine?.reset?.();
     }
 
-    /* ======================================
-       COLOR STORAGE
-    ====================================== */
+    resetAnalysis() {
+      AF.colorExtractor?.reset?.();
 
-    saveColorPeriodically(color) {
-      const now = Date.now();
-
-      if (now - this.lastSavedAt < 10000) {
-        return;
-      }
-
-      this.lastSavedAt = now;
-
-      AF.storage?.saveLastColor?.(color);
-
-      AF.storage?.saveChannelColor?.(color);
+      this.stats.lastColor = null;
     }
 
-    /* ======================================
-       SETTINGS UPDATES
-    ====================================== */
+    async handleSettingsChange(settings = {}) {
+      this.settings = {
+        ...this.settings,
+        ...settings,
+      };
 
-    async handleSettingsChange() {
-      await this.loadSettings();
+      this.enabled = this.settings.enabled !== false;
 
       this.configureEngines();
 
-      if (!this.settings.enabled) {
+      if (!this.enabled) {
         this.stopSampling();
         this.restoreYouTube();
         return;
       }
 
-      this.syncPlaybackState();
-    }
-
-    /* ======================================
-       PUBLIC CONTROL
-    ====================================== */
-
-    async start() {
-      if (this.running || this.destroyed) return;
-
-      this.running = true;
-
-      await this.loadSettings();
-
-      this.configureEngines();
-
-      this.subscribe();
-
-      AF.videoDetector?.start();
-      AF.youtubeDetector?.start();
-
-      if (this.settings.shortsSupport) {
-        AF.shortsSupport?.start();
-      }
-
-      this.handleVideoChange();
-
-      if (!this.settings.enabled) {
+      if (this.isPlaying && this.isVideoPlaying(this.currentVideo)) {
         this.stopSampling();
-        this.restoreYouTube();
+        this.startSampling();
       }
-
-      return true;
     }
 
-    async stop() {
-      this.running = false;
+    setEnabled(enabled) {
+      this.enabled = Boolean(enabled);
+      this.settings.enabled = this.enabled;
 
-      this.stopSampling();
-
-      this.detachVideoListeners();
-
-      this.video = null;
-
-      AF.videoDetector?.stop();
-      AF.youtubeDetector?.stop();
-      AF.shortsSupport?.stop();
-
-      this.restoreYouTube();
-
-      AF.colorExtractor?.reset();
-      AF.performanceEngine?.reset();
-
-      return true;
-    }
-
-    async setEnabled(enabled) {
-      this.settings.enabled = Boolean(enabled);
-
-      if (!this.settings.enabled) {
+      if (!this.enabled) {
         this.stopSampling();
         this.restoreYouTube();
       } else {
         this.syncPlaybackState();
       }
+
+      return this.enabled;
+    }
+
+    async start() {
+      if (this.started) {
+        return;
+      }
+
+      await this.loadSettings();
+
+      this.configureEngines();
+      this.subscribeToDetector();
+
+      this.started = true;
+
+      AF.videoDetector?.start?.();
+      AF.youtubeDetector?.start?.();
+      AF.shortsSupport?.start?.();
+
+      this.currentVideo = this.findVideo();
+
+      if (this.currentVideo) {
+        this.syncPlaybackState();
+      }
+
+      console.info("[Ambient Flow] Video analyzer started.");
+    }
+
+    stop() {
+      if (!this.started) {
+        return;
+      }
+
+      this.started = false;
+      this.isPlaying = false;
+      this.lastPlaybackState = "STOPPED";
+
+      this.stopSampling();
+
+      AF.videoDetector?.stop?.();
+      AF.youtubeDetector?.stop?.();
+      AF.shortsSupport?.stop?.();
+
+      this.currentVideo = null;
+      this.blockedVideo = null;
+
+      this.restoreYouTube();
     }
 
     getStatus() {
       return {
-        running: this.running,
-        enabled: Boolean(this.settings.enabled),
-        playing: this.isPlaying(),
-        sampling: this.sampling,
-        videoDetected: Boolean(this.video),
-        currentColor: this.lastColor,
-        sampleInterval: this.sampleInterval,
+        started: this.started,
+        enabled: this.enabled,
+        isPlaying: this.isPlaying,
+        isAnalyzing: this.isAnalyzing,
+        hasVideo: Boolean(this.currentVideo),
+        isShorts: AF.shortsSupport?.isActive?.() || false,
+        canvasBlocked: this.blockedVideo === this.currentVideo,
+        playbackState: this.lastPlaybackState,
+        stats: { ...this.stats },
       };
     }
 
     destroy() {
       this.stop();
 
-      this.unsubscribe();
+      this.unsubscribers.forEach((unsubscribe) => {
+        try {
+          unsubscribe();
+        } catch (error) {
+          console.warn("[Ambient Flow] Listener cleanup failed:", error);
+        }
+      });
 
-      this.destroyed = true;
+      this.unsubscribers = [];
+
+      AF.colorExtractor?.destroy?.();
+      AF.frameSampler?.destroy?.();
+      AF.sceneDetector?.destroy?.();
+      AF.ambientGlow?.destroy?.();
+      AF.themeEngine?.reset?.();
+
+      console.info("[Ambient Flow] Video analyzer destroyed.");
     }
   }
 
   AF.VideoAnalyzer = VideoAnalyzer;
-  AF.videoAnalyzer = new VideoAnalyzer();
+  AF.videoAnalyzer = AF.videoAnalyzer || new VideoAnalyzer();
 })();

@@ -1,6 +1,6 @@
 /* ==========================================
    YOUTUBE AMBIENT FLOW
-   Playback-Aware Theme Engine
+   Dynamic Theme Engine
 ========================================== */
 
 (() => {
@@ -10,25 +10,23 @@
 
   class ThemeEngine {
     constructor() {
-      this.styleId = "ambient-flow-theme";
-
       this.root = document.documentElement;
 
-      this.styleElement = null;
+      this.styleId = "ambient-flow-theme";
 
-      this.currentColor = null;
-      this.currentPalette = null;
+      this.styleElement = null;
 
       this.enabled = false;
       this.frozen = false;
       this.frozenColor = null;
 
-      this.originalVariables = null;
-      this.originalAttributes = null;
+      this.currentColor = null;
+      this.currentPalette = null;
 
-      this.transitionTimer = null;
+      this.originalVariables = new Map();
+      this.originalAttributes = new Map();
 
-      this.variableNames = [
+      this.variables = [
         "--af-primary",
         "--af-secondary",
         "--af-tertiary",
@@ -41,53 +39,49 @@
         "--af-transition",
       ];
 
-      this.attributeNames = ["data-af-enabled", "data-af-performance"];
+      this.attributes = ["data-af-enabled", "data-af-performance"];
 
-      this.captureOriginalStyles();
+      this.captureOriginalState();
     }
 
     /* ======================================
-       ORIGINAL STYLE PRESERVATION
+       ORIGINAL PAGE STATE
     ====================================== */
 
-    captureOriginalStyles() {
-      if (this.originalVariables) return;
-
-      this.originalVariables = {};
-
-      for (const name of this.variableNames) {
-        this.originalVariables[name] = this.root.style.getPropertyValue(name);
+    captureOriginalState() {
+      for (const variable of this.variables) {
+        this.originalVariables.set(
+          variable,
+          this.root.style.getPropertyValue(variable),
+        );
       }
 
-      this.originalAttributes = {};
-
-      for (const name of this.attributeNames) {
-        this.originalAttributes[name] = this.root.hasAttribute(name)
-          ? this.root.getAttribute(name)
-          : null;
+      for (const attribute of this.attributes) {
+        this.originalAttributes.set(
+          attribute,
+          this.root.getAttribute(attribute),
+        );
       }
     }
 
-    restoreOriginalVariables() {
-      for (const name of this.variableNames) {
-        const original = this.originalVariables[name];
+    restoreOriginalState() {
+      for (const variable of this.variables) {
+        const original = this.originalVariables.get(variable);
 
         if (original) {
-          this.root.style.setProperty(name, original);
+          this.root.style.setProperty(variable, original);
         } else {
-          this.root.style.removeProperty(name);
+          this.root.style.removeProperty(variable);
         }
       }
-    }
 
-    restoreOriginalAttributes() {
-      for (const name of this.attributeNames) {
-        const original = this.originalAttributes[name];
+      for (const attribute of this.attributes) {
+        const original = this.originalAttributes.get(attribute);
 
-        if (original === null) {
-          this.root.removeAttribute(name);
+        if (original === null || original === undefined) {
+          this.root.removeAttribute(attribute);
         } else {
-          this.root.setAttribute(name, original);
+          this.root.setAttribute(attribute, original);
         }
       }
     }
@@ -101,177 +95,228 @@
         return this.styleElement;
       }
 
-      let existing = document.getElementById(this.styleId);
+      let element = document.getElementById(this.styleId);
 
-      if (!existing) {
-        existing = document.createElement("style");
+      if (!element) {
+        element = document.createElement("style");
 
-        existing.id = this.styleId;
+        element.id = this.styleId;
 
-        (document.head || this.root).appendChild(existing);
+        element.setAttribute("data-af-generated", "true");
+
+        (document.head || document.documentElement).appendChild(element);
       }
 
-      this.styleElement = existing;
+      this.styleElement = element;
 
-      return this.styleElement;
+      return element;
     }
 
     /* ======================================
-       PALETTE APPLICATION
+       COLOR VALIDATION
+    ====================================== */
+
+    validateColor(color) {
+      return typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color);
+    }
+
+    /* ======================================
+       PALETTE GENERATION
+    ====================================== */
+
+    generatePalette(color, settings = {}) {
+      if (AF.paletteEngine?.generate) {
+        try {
+          const generated = AF.paletteEngine.generate(color, settings);
+
+          if (generated) {
+            return generated;
+          }
+        } catch (error) {
+          console.warn("[Ambient Flow] Palette engine failed:", error);
+        }
+      }
+
+      // Safe fallback if PaletteEngine is unavailable.
+      return {
+        primary: color,
+        secondary: color,
+        tertiary: color,
+        background: "#10151f",
+        surface: "#192331",
+        text: "#f4f7fc",
+        glow: color,
+      };
+    }
+
+    /* ======================================
+       APPLY THEME
     ====================================== */
 
     apply(color, settings = {}) {
-      if (!color) return false;
-
-      if (settings.enabled === false) {
-        this.reset();
+      if (!this.validateColor(color)) {
         return false;
       }
 
-      if (this.frozen && this.frozenColor) {
-        color = this.frozenColor;
-      }
+      const effectiveColor =
+        this.frozen && this.frozenColor ? this.frozenColor : color;
 
-      const palette = AF.paletteEngine.generate(color, settings);
+      const palette = this.generatePalette(effectiveColor, settings);
 
-      return this.applyPalette(palette, settings);
+      return this.applyPalette(palette, settings, effectiveColor);
     }
 
-    applyPalette(palette, settings = {}) {
-      if (!palette || settings.enabled === false) {
-        this.reset();
+    applyPalette(palette, settings = {}, sourceColor = null) {
+      if (!palette || typeof palette !== "object") {
         return false;
       }
 
-      if (this.frozen && this.frozenColor) {
-        return this.apply(this.frozenColor, {
-          ...settings,
-          enabled: true,
-        });
+      /*
+       * Frozen color is handled here without calling
+       * apply() recursively.
+       */
+      if (this.frozen && this.frozenColor && sourceColor !== this.frozenColor) {
+        palette = this.generatePalette(this.frozenColor, settings);
+
+        sourceColor = this.frozenColor;
       }
 
-      this.captureOriginalStyles();
+      const primary =
+        palette.primary || palette.dominant || sourceColor || "#243b55";
 
-      this.currentPalette = palette;
+      const secondary = palette.secondary || primary;
 
-      this.currentColor = palette.primary || palette.background || null;
+      const tertiary = palette.tertiary || secondary;
 
-      this.enabled = true;
+      const background = palette.background || "#10151f";
 
-      const variables = AF.paletteEngine.toCSSVariables(palette);
+      const surface = palette.surface || "#192331";
 
-      for (const [name, value] of Object.entries(variables)) {
-        this.root.style.setProperty(name, value);
-      }
+      const text = palette.text || "#f4f7fc";
+
+      const glow = palette.glow || primary;
+
+      const intensity =
+        Math.max(0, Math.min(100, Number(settings.intensity ?? 45))) / 100;
+
+      const blur = Math.max(0, Math.min(100, Number(settings.blur ?? 54)));
+
+      const transition = Math.max(
+        0,
+        Math.min(5000, Number(settings.transitionDuration ?? 400)),
+      );
+
+      this.root.style.setProperty("--af-primary", primary);
+
+      this.root.style.setProperty("--af-secondary", secondary);
+
+      this.root.style.setProperty("--af-tertiary", tertiary);
+
+      this.root.style.setProperty("--af-background", background);
+
+      this.root.style.setProperty("--af-surface", surface);
+
+      this.root.style.setProperty("--af-text", text);
+
+      this.root.style.setProperty("--af-glow", glow);
+
+      this.root.style.setProperty("--af-intensity", String(intensity));
+
+      this.root.style.setProperty("--af-blur", `${blur}px`);
+
+      this.root.style.setProperty("--af-transition", `${transition}ms`);
 
       this.root.setAttribute("data-af-enabled", "true");
 
-      this.root.setAttribute(
-        "data-af-performance",
-        settings.performanceMode || "balanced",
-      );
-
-      const style = this.ensureStyleElement();
-
-      const transition = Math.max(0, Number(settings.transitionMs ?? 900));
-
-      const intensity =
-        Math.max(
-          0,
-          Math.min(100, Number(settings.intensity ?? palette.intensity ?? 68)),
-        ) / 100;
-
-      const backgroundStyle = settings.backgroundStyle || "gradient";
-
-      let backgroundRule = "";
-
-      if (backgroundStyle === "solid") {
-        backgroundRule = `
-          background-color: var(--af-background) !important;
-        `;
-      } else if (backgroundStyle === "gradient") {
-        backgroundRule = `
-          background-image:
-            linear-gradient(
-              135deg,
-              color-mix(in srgb, var(--af-background) 94%, var(--af-primary) 6%),
-              var(--af-background)
-            ) !important;
-          background-color: var(--af-background) !important;
-        `;
+      if (settings.performanceMode) {
+        this.root.setAttribute("data-af-performance", settings.performanceMode);
+      } else {
+        this.root.removeAttribute("data-af-performance");
       }
 
-      style.textContent = `
-        :root {
-          --af-transition: ${transition}ms;
-          --af-intensity: ${intensity};
-        }
+      this.updateGeneratedStyles(settings, palette);
 
-        html[data-af-enabled="true"],
-        html[data-af-enabled="true"] body,
-        html[data-af-enabled="true"] ytd-app {
-          ${backgroundRule}
-          color: var(--af-text);
-          transition:
-            background-color ${transition}ms ease,
-            color ${transition}ms ease;
-        }
-
-        html[data-af-enabled="true"] #content,
-        html[data-af-enabled="true"] #page-manager,
-        html[data-af-enabled="true"] #columns,
-        html[data-af-enabled="true"] #primary,
-        html[data-af-enabled="true"] #secondary {
-          background-color: transparent;
-        }
-
-        html[data-af-enabled="true"] #masthead-container,
-        html[data-af-enabled="true"] ytd-masthead {
-          background-color: var(--af-background);
-        }
-
-        html[data-af-enabled="true"] ytd-rich-item-renderer:hover,
-        html[data-af-enabled="true"] ytd-video-renderer:hover,
-        html[data-af-enabled="true"] ytd-compact-video-renderer:hover,
-        html[data-af-enabled="true"] ytd-comment-thread-renderer:hover {
-          background-color: var(--af-surface);
-        }
-
-        html[data-af-enabled="true"] #video-title,
-        html[data-af-enabled="true"] #video-title-link {
-          color: var(--af-text);
-        }
-
-        html[data-af-enabled="true"] #ambient-flow-glow {
-          opacity: ${intensity};
-        }
-      `;
-
-      this.scheduleTransitionCleanup(transition);
+      this.currentColor = sourceColor || primary;
+      this.currentPalette = palette;
+      this.enabled = true;
 
       return true;
     }
 
     /* ======================================
-       TRANSITION MANAGEMENT
+       GENERATED PAGE STYLES
     ====================================== */
 
-    scheduleTransitionCleanup(duration) {
-      if (this.transitionTimer) {
-        clearTimeout(this.transitionTimer);
+    updateGeneratedStyles(settings, palette) {
+      const element = this.ensureStyleElement();
+
+      const backgroundStyle = settings.backgroundStyle || "gradient";
+
+      let backgroundRule = "";
+
+      if (backgroundStyle === "gradient") {
+        backgroundRule = `
+          background-image:
+            linear-gradient(
+              135deg,
+              var(--af-background),
+              var(--af-tertiary)
+            ) !important;
+        `;
+      } else if (backgroundStyle === "solid") {
+        backgroundRule = `
+          background-image: none !important;
+          background-color: var(--af-background) !important;
+        `;
+      } else {
+        backgroundRule = `
+          background-image: none !important;
+          background-color: transparent !important;
+        `;
       }
 
-      this.transitionTimer = setTimeout(() => {
-        this.transitionTimer = null;
-      }, duration + 100);
+      element.textContent = `
+        html[data-af-enabled="true"] body,
+        html[data-af-enabled="true"] ytd-app {
+          ${backgroundRule}
+        }
+
+        html[data-af-enabled="true"] #masthead-container,
+        html[data-af-enabled="true"] ytd-masthead {
+          background-color: var(--af-background) !important;
+        }
+
+        html[data-af-enabled="true"] #guide,
+        html[data-af-enabled="true"] #guide-content,
+        html[data-af-enabled="true"] ytd-mini-guide-renderer {
+          background-color: var(--af-background) !important;
+        }
+
+        html[data-af-enabled="true"] #secondary,
+        html[data-af-enabled="true"] #related,
+        html[data-af-enabled="true"] #comments {
+          background-color: transparent !important;
+        }
+
+        html[data-af-enabled="true"] tp-yt-paper-dialog,
+        html[data-af-enabled="true"] ytd-popup-container {
+          background-color: var(--af-surface) !important;
+        }
+
+        html[data-af-enabled="true"] {
+          color-scheme: dark;
+        }
+      `;
     }
 
     /* ======================================
-       FREEZE BACKGROUND
+       FREEZE COLOR
     ====================================== */
 
-    freeze(color = this.currentColor) {
-      if (!color) return false;
+    freeze(color) {
+      if (!this.validateColor(color)) {
+        return false;
+      }
 
       this.frozen = true;
       this.frozenColor = color;
@@ -282,50 +327,59 @@
     unfreeze() {
       this.frozen = false;
       this.frozenColor = null;
+
+      return true;
     }
 
     /* ======================================
-       RESTORE ORIGINAL YOUTUBE
+       FREEZE STATE
     ====================================== */
 
-    reset() {
-      this.enabled = false;
+    isFrozen() {
+      return this.frozen;
+    }
 
-      this.currentColor = null;
-      this.currentPalette = null;
-
-      if (this.transitionTimer) {
-        clearTimeout(this.transitionTimer);
-        this.transitionTimer = null;
-      }
-
-      // Remove generated theme CSS.
-      const style = document.getElementById(this.styleId);
-
-      if (style) {
-        style.remove();
-      }
-
-      this.styleElement = null;
-
-      // Restore original inline CSS variables.
-      this.restoreOriginalVariables();
-
-      // Restore original extension-related attributes.
-      this.restoreOriginalAttributes();
+    getFrozenColor() {
+      return this.frozenColor;
     }
 
     /* ======================================
-       STATUS
+       THEME STATE
     ====================================== */
 
     getStatus() {
       return {
         enabled: this.enabled,
         frozen: this.frozen,
+        frozenColor: this.frozenColor,
         currentColor: this.currentColor,
         currentPalette: this.currentPalette,
       };
+    }
+
+    /* ======================================
+       RESET
+    ====================================== */
+
+    reset() {
+      if (this.styleElement?.isConnected) {
+        this.styleElement.remove();
+      }
+
+      this.styleElement = null;
+
+      this.restoreOriginalState();
+
+      this.currentColor = null;
+      this.currentPalette = null;
+
+      this.enabled = false;
+
+      /*
+       * Do not clear frozen state here.
+       * A frozen color should survive a pause
+       * and be available when playback resumes.
+       */
     }
 
     /* ======================================
@@ -335,8 +389,9 @@
     destroy() {
       this.reset();
 
-      this.frozen = false;
-      this.frozenColor = null;
+      this.unfreeze();
+
+      this.enabled = false;
     }
   }
 

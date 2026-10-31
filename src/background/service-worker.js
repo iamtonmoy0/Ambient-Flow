@@ -1,129 +1,391 @@
+/* ==========================================
+   YOUTUBE AMBIENT FLOW
+   Manifest V3 Service Worker
+========================================== */
+
 "use strict";
 
-const COMMANDS = {
-  TOGGLE_AMBIENT: "toggle-ambient-flow",
-  TOGGLE_FOCUS: "toggle-focus-mode",
-  FREEZE_BACKGROUND: "freeze-background",
+const DEFAULT_SETTINGS = {
+  enabled: true,
+  ambientGlow: true,
+  focusMode: false,
+
+  frozen: false,
+  frozenColor: null,
+  customColor: null,
+
+  sampleInterval: 700,
+  sceneThreshold: 18,
+  sceneCooldown: 250,
+
+  glowIntensity: 0.35,
+  glowBlur: 90,
+
+  backgroundStyle: "gradient",
+  performanceMode: "balanced",
 };
 
-// Find the active YouTube tab
+const SETTINGS_KEY = "ambientFlowSettings";
+
+/* ==========================================
+   STORAGE HELPERS
+========================================== */
+
+async function getSettings() {
+  try {
+    const result = await chrome.storage.local.get(SETTINGS_KEY);
+
+    return {
+      ...DEFAULT_SETTINGS,
+      ...(result[SETTINGS_KEY] || {}),
+    };
+  } catch (error) {
+    console.error("[Ambient Flow] Settings read failed:", error);
+
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+async function saveSettings(updates = {}) {
+  const current = await getSettings();
+
+  const next = {
+    ...current,
+    ...updates,
+  };
+
+  await chrome.storage.local.set({
+    [SETTINGS_KEY]: next,
+  });
+
+  return next;
+}
+
+/* ==========================================
+   TAB MESSAGE HELPERS
+========================================== */
+
+async function sendToTab(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    return {
+      success: false,
+      error: "Content script unavailable.",
+    };
+  }
+}
+
 async function getActiveYouTubeTab() {
   const tabs = await chrome.tabs.query({
     active: true,
-    currentWindow: true,
+    lastFocusedWindow: true,
   });
 
   const tab = tabs[0];
 
-  if (!tab || !tab.url) return null;
-
-  if (
-    !tab.url.startsWith("https://www.youtube.com/") &&
-    !tab.url.startsWith("https://youtube.com/")
-  ) {
+  if (!tab || !tab.url || !/^https:\/\/(www\.)?youtube\.com\//i.test(tab.url)) {
     return null;
   }
 
   return tab;
 }
 
-// Send a message to the active YouTube tab
-async function sendToYouTube(type, payload = {}) {
-  const tab = await getActiveYouTubeTab();
+/* ==========================================
+   MESSAGE ROUTER
+========================================== */
 
-  if (!tab) {
-    return {
-      success: false,
-      error: "Open a YouTube tab first.",
-    };
-  }
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  (async () => {
+    try {
+      switch (message?.type) {
+        case "GET_SETTINGS": {
+          sendResponse({
+            success: true,
+            settings: await getSettings(),
+          });
 
+          break;
+        }
+
+        case "UPDATE_SETTINGS": {
+          const settings = await saveSettings(message.settings || {});
+
+          const tab = await getActiveYouTubeTab();
+
+          if (tab?.id !== undefined) {
+            await sendToTab(tab.id, {
+              type: "UPDATE_SETTINGS",
+              settings,
+            });
+          }
+
+          sendResponse({
+            success: true,
+            settings,
+          });
+
+          break;
+        }
+
+        case "GET_STATUS": {
+          const tab = await getActiveYouTubeTab();
+
+          if (!tab?.id) {
+            sendResponse({
+              success: true,
+              status: {
+                available: false,
+                enabled: false,
+                sampling: false,
+              },
+            });
+
+            break;
+          }
+
+          const response = await sendToTab(tab.id, {
+            type: "GET_STATUS",
+          });
+
+          sendResponse({
+            success: true,
+            status: response?.status || {
+              available: false,
+            },
+          });
+
+          break;
+        }
+
+        case "TOGGLE_AMBIENT_FLOW": {
+          const current = await getSettings();
+
+          const enabled =
+            typeof message.enabled === "boolean"
+              ? message.enabled
+              : !current.enabled;
+
+          const settings = await saveSettings({
+            enabled,
+          });
+
+          const tab = await getActiveYouTubeTab();
+
+          let response = null;
+
+          if (tab?.id !== undefined) {
+            response = await sendToTab(tab.id, {
+              type: "TOGGLE_AMBIENT_FLOW",
+              enabled,
+            });
+          }
+
+          sendResponse({
+            success: true,
+            enabled,
+            settings,
+            response,
+          });
+
+          break;
+        }
+
+        case "TOGGLE_FOCUS_MODE": {
+          const current = await getSettings();
+
+          const enabled =
+            typeof message.enabled === "boolean"
+              ? message.enabled
+              : !current.focusMode;
+
+          const settings = await saveSettings({
+            focusMode: enabled,
+          });
+
+          const tab = await getActiveYouTubeTab();
+
+          let response = null;
+
+          if (tab?.id !== undefined) {
+            response = await sendToTab(tab.id, {
+              type: "TOGGLE_FOCUS_MODE",
+              enabled,
+            });
+          }
+
+          sendResponse({
+            success: true,
+            enabled,
+            settings,
+            response,
+          });
+
+          break;
+        }
+
+        case "FREEZE_BACKGROUND": {
+          const current = await getSettings();
+
+          const frozen =
+            typeof message.frozen === "boolean"
+              ? message.frozen
+              : !current.frozen;
+
+          const settings = await saveSettings({
+            frozen,
+          });
+
+          const tab = await getActiveYouTubeTab();
+
+          let response = null;
+
+          if (tab?.id !== undefined) {
+            response = await sendToTab(tab.id, {
+              type: "FREEZE_BACKGROUND",
+              frozen,
+            });
+          }
+
+          sendResponse({
+            success: true,
+            frozen,
+            settings,
+            response,
+          });
+
+          break;
+        }
+
+        case "SET_CUSTOM_COLOR": {
+          const color = message.color;
+
+          if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+            throw new Error("Invalid color.");
+          }
+
+          const settings = await saveSettings({
+            customColor: color,
+            frozen: true,
+            frozenColor: color,
+          });
+
+          const tab = await getActiveYouTubeTab();
+
+          let response = null;
+
+          if (tab?.id !== undefined) {
+            response = await sendToTab(tab.id, {
+              type: "SET_CUSTOM_COLOR",
+              color,
+            });
+          }
+
+          sendResponse({
+            success: true,
+            color,
+            settings,
+            response,
+          });
+
+          break;
+        }
+
+        case "RESET_THEME": {
+          const settings = await saveSettings({
+            frozen: false,
+            frozenColor: null,
+            customColor: null,
+          });
+
+          const tab = await getActiveYouTubeTab();
+
+          let response = null;
+
+          if (tab?.id !== undefined) {
+            response = await sendToTab(tab.id, {
+              type: "RESET_THEME",
+            });
+          }
+
+          sendResponse({
+            success: true,
+            settings,
+            response,
+          });
+
+          break;
+        }
+
+        default:
+          sendResponse({
+            success: false,
+            error: "Unknown message type.",
+          });
+      }
+    } catch (error) {
+      console.error("[Ambient Flow] Service worker error:", error);
+
+      sendResponse({
+        success: false,
+        error: error.message,
+      });
+    }
+  })();
+
+  return true;
+});
+
+/* ==========================================
+   EXTENSION INSTALLATION
+========================================== */
+
+chrome.runtime.onInstalled.addListener(async (details) => {
   try {
-    return await chrome.tabs.sendMessage(tab.id, {
-      type,
-      ...payload,
-    });
-  } catch (error) {
-    return {
-      success: false,
-      error: "Ambient Flow is not ready on this YouTube page.",
-    };
-  }
-}
+    const existing = await chrome.storage.local.get(SETTINGS_KEY);
 
-// Handle keyboard shortcuts
-chrome.commands.onCommand.addListener(async (command) => {
-  try {
-    switch (command) {
-      case COMMANDS.TOGGLE_AMBIENT:
-        await sendToYouTube("TOGGLE_AMBIENT_FLOW");
-        break;
+    if (!existing[SETTINGS_KEY]) {
+      await chrome.storage.local.set({
+        [SETTINGS_KEY]: DEFAULT_SETTINGS,
+      });
+    }
 
-      case COMMANDS.TOGGLE_FOCUS:
-        await sendToYouTube("TOGGLE_FOCUS_MODE");
-        break;
+    if (details.reason === "install") {
+      console.info("[Ambient Flow] Extension installed.");
+    }
 
-      case COMMANDS.FREEZE_BACKGROUND:
-        await sendToYouTube("FREEZE_BACKGROUND");
-        break;
-
-      default:
-        console.warn("[AmbientFlow] Unknown command:", command);
+    if (details.reason === "update") {
+      console.info(
+        "[Ambient Flow] Extension updated:",
+        details.previousVersion,
+      );
     }
   } catch (error) {
-    console.error("[AmbientFlow] Command failed:", error);
+    console.error("[Ambient Flow] Installation setup failed:", error);
   }
 });
 
-// Handle messages from popup and other extension contexts
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.type) return false;
+/* ==========================================
+   TAB NAVIGATION
+========================================== */
 
-  if (message.type === "AMBIENT_FLOW_READY") {
-    sendResponse({ success: true });
-    return false;
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") {
+    return;
   }
 
-  if (message.target === "ACTIVE_YOUTUBE_TAB") {
-    sendToYouTube(message.type, message.payload || {})
-      .then(sendResponse)
-      .catch((error) => {
-        sendResponse({
-          success: false,
-          error: error.message,
-        });
-      });
-
-    return true;
+  if (!tab.url || !/^https:\/\/(www\.)?youtube\.com\//i.test(tab.url)) {
+    return;
   }
 
-  return false;
+  const settings = await getSettings();
+
+  console.info(
+    "[Ambient Flow] YouTube tab loaded:",
+    tabId,
+    "Enabled:",
+    settings.enabled,
+  );
 });
 
-// Extension installation and update
-chrome.runtime.onInstalled.addListener((details) => {
-  if (details.reason === "install") {
-    chrome.storage.local.set({
-      enabled: true,
-      autoStart: true,
-      mode: "cinematic",
-      performanceMode: "balanced",
-    });
-
-    console.info("[AmbientFlow] Extension installed.");
-  }
-
-  if (details.reason === "update") {
-    console.info(
-      "[AmbientFlow] Updated to version:",
-      chrome.runtime.getManifest().version,
-    );
-  }
-});
-
-// Extension startup
-chrome.runtime.onStartup.addListener(() => {
-  console.info("[AmbientFlow] Background service worker started.");
-});
-
-console.info("[AmbientFlow] Service worker loaded.");
+console.info("[Ambient Flow] Service worker loaded.");

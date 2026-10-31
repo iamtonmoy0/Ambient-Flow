@@ -1,7 +1,7 @@
-/* ==========================================
-   YOUTUBE AMBIENT FLOW
-   Main Content Script Controller
-========================================== */
+/**
+ * YouTube Ambient Flow
+ * Main Content Script Controller
+ */
 
 (() => {
   "use strict";
@@ -10,395 +10,413 @@
 
   class AmbientFlowController {
     constructor() {
-      this.analyzer = AF.videoAnalyzer;
-
       this.initialized = false;
-      this.destroyed = false;
-
       this.messageListener = null;
-      this.keyListener = null;
-      this.pageHideListener = null;
+      this.boundKeyHandler = this.handleKeyboard.bind(this);
+      this.boundPageHide = this.handlePageHide.bind(this);
 
-      this.handleMessage = this.handleMessage.bind(this);
-      this.handleKeyboard = this.handleKeyboard.bind(this);
-      this.handlePageHide = this.handlePageHide.bind(this);
+      this.focusSettings = {
+        hideSidebar: true,
+        hideComments: false,
+        hideRecommendations: false,
+        hideChat: true,
+        hideHeader: false,
+        hideShortsSidebar: false,
+      };
     }
 
-    /* ======================================
-       INITIALIZATION
-    ====================================== */
-
     async init() {
-      if (this.initialized || this.destroyed) {
-        return;
-      }
+      if (this.initialized) return;
 
-      if (!this.analyzer) {
-        console.error("[Ambient Flow] Video analyzer is unavailable.");
-        return;
-      }
+      this.initialized = true;
+
+      this.registerMessageListener();
+
+      window.addEventListener("keydown", this.boundKeyHandler);
+
+      window.addEventListener("pagehide", this.boundPageHide);
 
       try {
-        await this.analyzer.start();
+        await AF.videoAnalyzer?.start?.();
 
-        this.registerListeners();
+        const settings = await this.getSettings();
 
-        this.initialized = true;
+        if (settings.focusModeEnabled) {
+          AF.focusMode?.enable?.(this.focusSettings);
+        }
 
-        console.info("[Ambient Flow] Initialized successfully.");
-
-        this.notifyReady();
+        console.info("[Ambient Flow] Controller initialized.");
       } catch (error) {
         console.error("[Ambient Flow] Initialization failed:", error);
       }
     }
 
-    registerListeners() {
-      if (this.messageListener) return;
+    registerMessageListener() {
+      if (typeof chrome === "undefined" || !chrome.runtime?.onMessage) {
+        return;
+      }
 
-      this.messageListener = this.handleMessage;
+      this.messageListener = (message, sender, sendResponse) => {
+        if (!message?.type) return false;
+
+        this.handleMessage(message)
+          .then((response) => {
+            sendResponse({
+              success: true,
+              ...response,
+            });
+          })
+          .catch((error) => {
+            console.error("[Ambient Flow] Message handling failed:", error);
+
+            sendResponse({
+              success: false,
+              error: error.message || "Operation failed",
+            });
+          });
+
+        // Keep the message channel open for the asynchronous response.
+        return true;
+      };
 
       chrome.runtime.onMessage.addListener(this.messageListener);
-
-      this.keyListener = this.handleKeyboard;
-
-      document.addEventListener("keydown", this.keyListener);
-
-      this.pageHideListener = this.handlePageHide;
-
-      window.addEventListener("pagehide", this.pageHideListener);
     }
 
-    unregisterListeners() {
-      if (this.messageListener) {
-        chrome.runtime.onMessage.removeListener(this.messageListener);
+    async handleMessage(message) {
+      switch (message.type) {
+        case "GET_STATUS":
+          return this.getStatus();
 
-        this.messageListener = null;
+        case "GET_SETTINGS":
+          return {
+            settings: await this.getSettings(),
+          };
+
+        case "UPDATE_SETTINGS":
+          return this.updateSettings(message.settings || {});
+
+        case "TOGGLE_AMBIENT_FLOW":
+          return this.toggleAmbientFlow(message.enabled);
+
+        case "TOGGLE_FOCUS_MODE":
+          return this.toggleFocusMode(message.enabled);
+
+        case "UPDATE_FOCUS_SETTINGS":
+          return this.updateFocusSettings(message.settings || {});
+
+        case "FREEZE_BACKGROUND":
+          return this.freezeBackground(message);
+
+        case "SET_CUSTOM_COLOR":
+          return this.setCustomColor(message.color);
+
+        case "RESET_THEME":
+          return this.resetTheme();
+
+        default:
+          throw new Error(`Unknown message type: ${message.type}`);
       }
-
-      if (this.keyListener) {
-        document.removeEventListener("keydown", this.keyListener);
-
-        this.keyListener = null;
-      }
-
-      if (this.pageHideListener) {
-        window.removeEventListener("pagehide", this.pageHideListener);
-
-        this.pageHideListener = null;
-      }
-    }
-
-    notifyReady() {
-      try {
-        chrome.runtime
-          .sendMessage({
-            type: "AMBIENT_FLOW_READY",
-            status: this.getStatus(),
-          })
-          .catch(() => {
-            // The background worker may not be listening.
-          });
-      } catch {
-        // Ignore unavailable runtime messaging.
-      }
-    }
-
-    /* ======================================
-       STATUS
-    ====================================== */
-
-    getStatus() {
-      return {
-        initialized: this.initialized,
-        ...this.analyzer.getStatus(),
-      };
     }
 
     async getSettings() {
-      return AF.storage.getAll();
+      const defaults = AF.DEFAULT_SETTINGS || {};
+
+      try {
+        const stored = await AF.storage?.getAll?.();
+
+        return {
+          ...defaults,
+          ...(stored || {}),
+        };
+      } catch (error) {
+        console.warn("[Ambient Flow] Could not retrieve settings:", error);
+
+        return { ...defaults };
+      }
     }
 
-    /* ======================================
-       MESSAGE HANDLING
-    ====================================== */
-
-    handleMessage(message, sender, sendResponse) {
-      if (!message || typeof message.type !== "string") {
-        return false;
+    async updateSettings(newSettings) {
+      if (
+        !newSettings ||
+        typeof newSettings !== "object" ||
+        Array.isArray(newSettings)
+      ) {
+        throw new Error("Invalid settings object.");
       }
 
-      const actions = {
-        GET_STATUS: async () => ({
-          success: true,
-          status: this.getStatus(),
-        }),
+      let sanitized = newSettings;
 
-        GET_SETTINGS: async () => ({
-          success: true,
-          settings: await this.getSettings(),
-        }),
+      if (AF.settings?.validate) {
+        const validation = AF.settings.validate(newSettings);
 
-        UPDATE_SETTINGS: async () => {
-          await this.updateSettings(message.settings);
+        if (!validation.valid) {
+          throw new Error(
+            validation.errors?.join(", ") || "Settings validation failed.",
+          );
+        }
 
-          return {
-            success: true,
-            status: this.getStatus(),
-          };
-        },
+        sanitized = validation.settings;
+      }
 
-        TOGGLE_AMBIENT_FLOW: async () => {
-          const enabled = await this.toggleAmbientFlow();
+      if (!AF.storage?.set) {
+        throw new Error("Storage manager is unavailable.");
+      }
 
-          return {
-            success: true,
-            enabled,
-            status: this.getStatus(),
-          };
-        },
+      await AF.storage.set(sanitized);
 
-        TOGGLE_FOCUS_MODE: async () => {
-          const enabled = await this.toggleFocusMode();
+      await AF.videoAnalyzer?.handleSettingsChange?.(await this.getSettings());
 
-          return {
-            success: true,
-            enabled,
-          };
-        },
-
-        FREEZE_BACKGROUND: async () => {
-          const frozen = await this.freezeBackground();
-
-          return {
-            success: true,
-            frozen,
-          };
-        },
-
-        SET_CUSTOM_COLOR: async () => {
-          const applied = await this.setCustomColor(message.color);
-
-          return {
-            success: applied,
-            color: message.color,
-          };
-        },
-
-        RESET_THEME: async () => {
-          this.analyzer.restoreYouTube();
-
-          return {
-            success: true,
-            message: "Original YouTube appearance restored.",
-          };
-        },
+      return {
+        message: "Settings updated.",
+        settings: await this.getSettings(),
       };
-
-      const action = actions[message.type];
-
-      if (!action) return false;
-
-      action()
-        .then(sendResponse)
-        .catch((error) => {
-          sendResponse({
-            success: false,
-            error: error?.message || "Action failed.",
-          });
-        });
-
-      return true;
     }
 
-    /* ======================================
-       SETTINGS
-    ====================================== */
+    async toggleAmbientFlow(enabled) {
+      const current = await this.getSettings();
 
-    async updateSettings(settings = {}) {
+      const nextEnabled =
+        typeof enabled === "boolean" ? enabled : !current.enabled;
+
+      await AF.storage?.set?.({
+        enabled: nextEnabled,
+      });
+
+      AF.videoAnalyzer?.setEnabled?.(nextEnabled);
+
+      if (!nextEnabled) {
+        AF.videoAnalyzer?.stopSampling?.();
+        AF.ambientGlow?.hide?.();
+        AF.themeEngine?.reset?.();
+      }
+
+      return {
+        enabled: nextEnabled,
+      };
+    }
+
+    async toggleFocusMode(enabled) {
+      const current = await this.getSettings();
+
+      const nextEnabled =
+        typeof enabled === "boolean"
+          ? enabled
+          : !Boolean(current.focusModeEnabled);
+
+      if (nextEnabled) {
+        AF.focusMode?.enable?.(this.focusSettings);
+      } else {
+        AF.focusMode?.disable?.();
+      }
+
+      await AF.storage?.set?.({
+        focusModeEnabled: nextEnabled,
+      });
+
+      return {
+        focusModeEnabled: nextEnabled,
+        focusMode: AF.focusMode?.getStatus?.(),
+      };
+    }
+
+    updateFocusSettings(settings) {
       if (
         !settings ||
         typeof settings !== "object" ||
         Array.isArray(settings)
       ) {
-        throw new Error("Invalid settings object.");
+        throw new Error("Invalid Focus Mode settings.");
       }
 
-      const validated = AF.settings ? AF.settings.validate(settings) : settings;
+      const allowedKeys = Object.keys(this.focusSettings);
 
-      await AF.storage.set(validated);
+      for (const [key, value] of Object.entries(settings)) {
+        if (!allowedKeys.includes(key)) continue;
 
-      await this.analyzer.handleSettingsChange();
+        this.focusSettings[key] = Boolean(value);
+      }
 
-      return validated;
+      AF.focusMode?.updateSettings?.(this.focusSettings);
+
+      return {
+        focusMode: AF.focusMode?.getStatus?.(),
+      };
     }
 
-    /* ======================================
-       AMBIENT FLOW CONTROL
-    ====================================== */
+    async freezeBackground(message) {
+      const current = await this.getSettings();
 
-    async toggleAmbientFlow() {
-      const settings = await AF.storage.getAll();
+      const frozen =
+        typeof message.frozen === "boolean"
+          ? message.frozen
+          : !Boolean(current.frozen);
 
-      const enabled = !settings.enabled;
+      const color = message.color || current.frozenColor || null;
 
-      await AF.storage.set({ enabled });
-
-      await this.analyzer.handleSettingsChange();
-
-      if (!enabled) {
-        this.analyzer.stopSampling();
-        this.analyzer.restoreYouTube();
-      } else {
-        this.analyzer.syncPlaybackState();
-      }
-
-      return enabled;
-    }
-
-    /* ======================================
-       FOCUS MODE
-    ====================================== */
-
-    async toggleFocusMode() {
-      const current = AF.focusMode?.isEnabled?.() || false;
-
-      const enabled = !current;
-
-      if (enabled) {
-        AF.focusMode?.enable();
-      } else {
-        AF.focusMode?.disable();
-      }
-
-      await AF.storage.set({
-        focusMode: enabled,
-      });
-
-      return enabled;
-    }
-
-    /* ======================================
-       FREEZE BACKGROUND
-    ====================================== */
-
-    async freezeBackground() {
-      const settings = await AF.storage.getAll();
-
-      const frozen = !settings.frozen;
-
-      if (frozen) {
-        const color =
-          this.analyzer.lastColor || settings.lastColor || settings.customColor;
-
-        if (color) {
-          AF.themeEngine.freeze(color);
-        }
-      } else {
-        AF.themeEngine.unfreeze();
-
-        if (this.analyzer.isPlaying()) {
-          this.analyzer.lastAppliedColor = null;
-        }
-      }
-
-      await AF.storage.set({
+      await AF.storage?.set?.({
         frozen,
-        frozenColor: frozen
-          ? this.analyzer.lastColor ||
-            settings.lastColor ||
-            settings.customColor
-          : settings.frozenColor,
+        frozenColor: frozen ? color : null,
       });
 
-      return frozen;
-    }
+      if (frozen && color) {
+        AF.themeEngine?.freeze?.(color);
 
-    /* ======================================
-       CUSTOM COLOR
-    ====================================== */
+        const rgb = this.hexToRgb(color);
+
+        if (rgb && AF.videoAnalyzer?.isPlaying) {
+          AF.videoAnalyzer.applyColor(rgb);
+        }
+      } else {
+        AF.themeEngine?.unfreeze?.();
+      }
+
+      await AF.videoAnalyzer?.handleSettingsChange?.(await this.getSettings());
+
+      return {
+        frozen,
+        frozenColor: frozen ? color : null,
+      };
+    }
 
     async setCustomColor(color) {
-      if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) {
-        throw new Error("Invalid hexadecimal color.");
+      if (!AF.settings?.isHexColor?.(color)) {
+        throw new Error("Invalid color. Use a valid HEX color.");
       }
 
-      if (!this.analyzer.isPlaying()) {
-        throw new Error("Play a video before applying an ambient color.");
-      }
-
-      await AF.storage.set({
-        customColor: color,
+      await AF.storage?.set?.({
         frozen: true,
         frozenColor: color,
       });
 
-      AF.themeEngine.freeze(color);
+      AF.themeEngine?.freeze?.(color);
 
-      this.analyzer.applyColor(color);
+      const rgb = this.hexToRgb(color);
 
-      return true;
+      if (rgb && AF.videoAnalyzer?.isPlaying) {
+        AF.videoAnalyzer.applyColor(rgb);
+      }
+
+      return {
+        frozen: true,
+        color,
+      };
     }
 
-    /* ======================================
-       KEYBOARD SHORTCUTS
-    ====================================== */
+    async resetTheme() {
+      AF.videoAnalyzer?.stopSampling?.();
+
+      AF.themeEngine?.unfreeze?.();
+      AF.themeEngine?.reset?.();
+      AF.ambientGlow?.hide?.();
+
+      await AF.storage?.set?.({
+        frozen: false,
+        frozenColor: null,
+      });
+
+      AF.videoAnalyzer?.syncPlaybackState?.();
+
+      return {
+        message: "Theme reset.",
+      };
+    }
+
+    hexToRgb(hex) {
+      if (typeof hex !== "string") return null;
+
+      const match = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+
+      if (!match) return null;
+
+      return {
+        r: parseInt(match[1], 16),
+        g: parseInt(match[2], 16),
+        b: parseInt(match[3], 16),
+      };
+    }
+
+    async getStatus() {
+      const settings = await this.getSettings();
+
+      return {
+        initialized: this.initialized,
+        settings,
+        analyzer: AF.videoAnalyzer?.getStatus?.() || null,
+        focusMode: AF.focusMode?.getStatus?.() || null,
+        shorts: AF.shortsSupport?.getStatus?.() || null,
+      };
+    }
 
     handleKeyboard(event) {
-      if (!event.altKey || !event.shiftKey || event.repeat) {
+      if (!event.altKey || !event.shiftKey) {
         return;
       }
 
-      const key = event.key.toLowerCase();
-
-      if (key === "a") {
+      // Alt + Shift + A: Toggle Ambient Flow.
+      if (event.code === "KeyA") {
         event.preventDefault();
         this.toggleAmbientFlow();
       }
 
-      if (key === "f") {
+      // Alt + Shift + F: Toggle Focus Mode.
+      if (event.code === "KeyF") {
         event.preventDefault();
         this.toggleFocusMode();
       }
 
-      if (key === "c") {
+      // Alt + Shift + C: Reset ambient theme.
+      if (event.code === "KeyC") {
         event.preventDefault();
-        this.freezeBackground();
+        this.resetTheme();
       }
     }
 
-    /* ======================================
-       PAGE CLEANUP
-    ====================================== */
-
     handlePageHide() {
-      this.analyzer.stopSampling();
-      this.analyzer.restoreYouTube();
+      AF.videoAnalyzer?.stop?.();
+      AF.ambientGlow?.hide?.();
+      AF.themeEngine?.reset?.();
     }
 
-    async destroy() {
-      if (this.destroyed) return;
-
-      this.destroyed = true;
-
-      this.unregisterListeners();
-
-      await this.analyzer.destroy();
+    destroy() {
+      if (!this.initialized) return;
 
       this.initialized = false;
+
+      window.removeEventListener("keydown", this.boundKeyHandler);
+
+      window.removeEventListener("pagehide", this.boundPageHide);
+
+      if (
+        this.messageListener &&
+        typeof chrome !== "undefined" &&
+        chrome.runtime?.onMessage
+      ) {
+        chrome.runtime.onMessage.removeListener(this.messageListener);
+      }
+
+      AF.videoAnalyzer?.destroy?.();
+      AF.focusMode?.destroy?.();
+
+      this.messageListener = null;
+
+      console.info("[Ambient Flow] Controller destroyed.");
     }
   }
 
-  /* ======================================
-     START APPLICATION
-  ====================================== */
+  AF.AmbientFlowController = AmbientFlowController;
 
-  const controller = new AmbientFlowController();
+  AF.controller = AF.controller || new AmbientFlowController();
 
-  AF.controller = controller;
+  AF.destroy = () => {
+    AF.controller?.destroy?.();
+  };
 
-  controller.init();
-
-  // Expose a cleanup function for debugging.
-  AF.destroy = () => controller.destroy();
+  // Start once the document is ready.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => AF.controller.init(), {
+      once: true,
+    });
+  } else {
+    AF.controller.init();
+  }
 })();

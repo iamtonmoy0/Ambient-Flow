@@ -1,6 +1,6 @@
 /* ==========================================
    YOUTUBE AMBIENT FLOW
-   Shared Messaging Utility
+   Unified Messaging System
 ========================================== */
 
 (() => {
@@ -8,181 +8,189 @@
 
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
-  const MESSAGE_TYPES = Object.freeze({
-    GET_STATUS: "GET_STATUS",
-    GET_SETTINGS: "GET_SETTINGS",
-    UPDATE_SETTINGS: "UPDATE_SETTINGS",
-
-    TOGGLE_AMBIENT_FLOW: "TOGGLE_AMBIENT_FLOW",
-    TOGGLE_FOCUS_MODE: "TOGGLE_FOCUS_MODE",
-    FREEZE_BACKGROUND: "FREEZE_BACKGROUND",
-
-    SET_CUSTOM_COLOR: "SET_CUSTOM_COLOR",
-    RESET_THEME: "RESET_THEME",
-
-    AMBIENT_FLOW_READY: "AMBIENT_FLOW_READY",
-    ACTIVE_YOUTUBE_TAB: "ACTIVE_YOUTUBE_TAB",
-  });
-
-  /**
-   * Send a message to the extension runtime.
-   */
-  async function send(message) {
-    if (!chrome?.runtime?.sendMessage) {
-      throw new Error("Extension messaging is unavailable.");
+  class Messaging {
+    constructor() {
+      this.available =
+        typeof chrome !== "undefined" && Boolean(chrome.runtime?.sendMessage);
     }
 
-    try {
-      return await chrome.runtime.sendMessage(message);
-    } catch (error) {
-      throw new Error(error?.message || "Unable to send extension message.");
-    }
-  }
+    /* ======================================
+       AVAILABILITY
+    ====================================== */
 
-  /**
-   * Send a message to a specific tab.
-   */
-  async function sendToTab(tabId, message) {
-    if (!chrome?.tabs?.sendMessage) {
-      throw new Error("Tab messaging is unavailable.");
+    isAvailable() {
+      return this.available;
     }
 
-    if (!Number.isInteger(tabId)) {
-      throw new Error("A valid tab ID is required.");
-    }
+    /* ======================================
+       SEND TO BACKGROUND
+    ====================================== */
 
-    try {
-      return await chrome.tabs.sendMessage(tabId, message);
-    } catch (error) {
-      throw new Error(error?.message || "Unable to communicate with the tab.");
-    }
-  }
-
-  /**
-   * Find the active YouTube tab.
-   */
-  async function getActiveYouTubeTab() {
-    if (!chrome?.tabs?.query) {
-      throw new Error("Tab query API is unavailable.");
-    }
-
-    const tabs = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-
-    return (
-      tabs.find((tab) => {
-        if (!tab.url) return false;
-
-        try {
-          const url = new URL(tab.url);
-
-          return (
-            url.hostname === "youtube.com" ||
-            url.hostname.endsWith(".youtube.com")
-          );
-        } catch {
-          return false;
-        }
-      }) || null
-    );
-  }
-
-  /**
-   * Send a message to the active YouTube tab.
-   */
-  async function sendToActiveYouTubeTab(message) {
-    const tab = await getActiveYouTubeTab();
-
-    if (!tab?.id) {
-      throw new Error("No active YouTube tab was found.");
-    }
-
-    return sendToTab(tab.id, message);
-  }
-
-  /**
-   * Register a runtime message listener.
-   *
-   * The handler may return a value or a Promise.
-   */
-  function onMessage(handler) {
-    if (typeof handler !== "function") {
-      throw new TypeError("Message handler must be a function.");
-    }
-
-    if (!chrome?.runtime?.onMessage) {
-      return () => {};
-    }
-
-    const listener = (message, sender, sendResponse) => {
-      try {
-        const result = handler(message, sender);
-
-        if (result && typeof result.then === "function") {
-          result
-            .then((response) => sendResponse(response))
-            .catch((error) => {
-              sendResponse({
-                success: false,
-                error: error?.message || "Message handling failed.",
-              });
-            });
-
-          return true;
-        }
-
-        if (result !== undefined) {
-          sendResponse(result);
-        }
-      } catch (error) {
-        sendResponse({
-          success: false,
-          error: error?.message || "Message handling failed.",
-        });
+    async send(message = {}) {
+      if (!this.available) {
+        throw new Error("Chrome extension messaging is unavailable.");
       }
 
-      return false;
-    };
+      if (
+        !message ||
+        typeof message !== "object" ||
+        typeof message.type !== "string"
+      ) {
+        throw new TypeError("A valid message type is required.");
+      }
 
-    chrome.runtime.onMessage.addListener(listener);
+      try {
+        const response = await chrome.runtime.sendMessage(message);
 
-    return () => {
-      chrome.runtime.onMessage.removeListener(listener);
-    };
+        if (!response) {
+          throw new Error("The background service did not respond.");
+        }
+
+        if (response.success === false) {
+          throw new Error(response.error || "Messaging request failed.");
+        }
+
+        return response;
+      } catch (error) {
+        console.error("[Ambient Flow] Messaging failed:", error);
+
+        throw error;
+      }
+    }
+
+    /* ======================================
+       SEND TO CONTENT SCRIPT
+    ====================================== */
+
+    async sendToContent(message = {}, tabId = null) {
+      if (typeof chrome === "undefined" || !chrome.tabs?.sendMessage) {
+        throw new Error("Tab messaging is unavailable in this context.");
+      }
+
+      let targetTabId = tabId;
+
+      if (targetTabId === null) {
+        const tabs = await chrome.tabs.query({
+          active: true,
+          lastFocusedWindow: true,
+        });
+
+        targetTabId = tabs[0]?.id;
+      }
+
+      if (typeof targetTabId !== "number") {
+        throw new Error("No active browser tab was found.");
+      }
+
+      return chrome.tabs.sendMessage(targetTabId, message);
+    }
+
+    /* ======================================
+       SETTINGS
+    ====================================== */
+
+    async getSettings() {
+      const response = await this.send({
+        type: "GET_SETTINGS",
+      });
+
+      return response.settings;
+    }
+
+    async updateSettings(settings = {}) {
+      const response = await this.send({
+        type: "UPDATE_SETTINGS",
+        settings,
+      });
+
+      return response.settings;
+    }
+
+    /* ======================================
+       STATUS
+    ====================================== */
+
+    async getStatus() {
+      const response = await this.send({
+        type: "GET_STATUS",
+      });
+
+      return response.status;
+    }
+
+    /* ======================================
+       AMBIENT FLOW
+    ====================================== */
+
+    async toggleAmbientFlow(enabled) {
+      const response = await this.send({
+        type: "TOGGLE_AMBIENT_FLOW",
+        enabled,
+      });
+
+      return response.enabled;
+    }
+
+    /* ======================================
+       FOCUS MODE
+    ====================================== */
+
+    async toggleFocusMode(enabled) {
+      const response = await this.send({
+        type: "TOGGLE_FOCUS_MODE",
+        enabled,
+      });
+
+      return response.enabled;
+    }
+
+    /* ======================================
+       FREEZE BACKGROUND
+    ====================================== */
+
+    async freezeBackground(frozen) {
+      const response = await this.send({
+        type: "FREEZE_BACKGROUND",
+        frozen,
+      });
+
+      return response.frozen;
+    }
+
+    /* ======================================
+       CUSTOM COLOR
+    ====================================== */
+
+    async setCustomColor(color) {
+      if (!AF.settings?.isHexColor?.(color)) {
+        throw new Error("Please provide a valid hexadecimal color.");
+      }
+
+      const response = await this.send({
+        type: "SET_CUSTOM_COLOR",
+        color,
+      });
+
+      return response.color;
+    }
+
+    /* ======================================
+       RESET THEME
+    ====================================== */
+
+    async resetTheme() {
+      const response = await this.send({
+        type: "RESET_THEME",
+      });
+
+      return response.reset === true;
+    }
   }
 
-  /**
-   * Create a consistent response object.
-   */
-  function success(data = null, message = "Success") {
-    return {
-      success: true,
-      message,
-      data,
-    };
-  }
+  /* ======================================
+     GLOBAL INSTANCE
+  ====================================== */
 
-  function failure(error, code = "UNKNOWN_ERROR") {
-    return {
-      success: false,
-      code,
-      error:
-        typeof error === "string"
-          ? error
-          : error?.message || "An unexpected error occurred.",
-    };
-  }
-
-  AF.messaging = {
-    MESSAGE_TYPES,
-    send,
-    sendToTab,
-    getActiveYouTubeTab,
-    sendToActiveYouTubeTab,
-    onMessage,
-    success,
-    failure,
-  };
+  AF.Messaging = Messaging;
+  AF.messaging = new Messaging();
 })();

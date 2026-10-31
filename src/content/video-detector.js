@@ -1,6 +1,6 @@
 /* ==========================================
    YOUTUBE AMBIENT FLOW
-   Dynamic Video Detector
+   Reliable Video and Playback Detector
 ========================================== */
 
 (() => {
@@ -20,12 +20,13 @@
 
       this.events = new Map();
 
-      this.scanTimer = null;
+      this.intervalTimer = null;
+      this.navigationTimer = null;
+
       this.scanInterval = 1000;
+      this.lastUrl = location.href;
 
       this.videoListeners = [];
-
-      this.lastUrl = location.href;
 
       this.handleVideoEvent = this.handleVideoEvent.bind(this);
 
@@ -61,7 +62,7 @@
 
       listeners.delete(callback);
 
-      if (listeners.size === 0) {
+      if (!listeners.size) {
         this.events.delete(eventName);
       }
     }
@@ -71,36 +72,28 @@
 
       if (!listeners) return;
 
-      for (const callback of listeners) {
+      for (const callback of [...listeners]) {
         try {
           callback(data);
         } catch (error) {
-          console.error(
-            `[Ambient Flow] VideoDetector event error (${eventName}):`,
-            error,
-          );
+          console.error(`[Ambient Flow] ${eventName} listener failed:`, error);
         }
       }
     }
 
     /* ======================================
-       VIDEO ELEMENT DISCOVERY
+       VIDEO DISCOVERY
     ====================================== */
 
     findVideo() {
-      const videos = Array.from(document.querySelectorAll("video"));
-
-      if (!videos.length) return null;
-
-      // Prefer the active YouTube player video.
-      const preferredSelectors = [
+      const selectors = [
         "#movie_player video",
         "ytd-player video",
         "ytd-reel-video-renderer video",
         "ytd-shorts video",
       ];
 
-      for (const selector of preferredSelectors) {
+      for (const selector of selectors) {
         const video = document.querySelector(selector);
 
         if (video instanceof HTMLVideoElement && video.isConnected) {
@@ -108,8 +101,9 @@
         }
       }
 
-      // Fallback: select the most relevant visible video.
-      const candidates = videos
+      const videos = [...document.querySelectorAll("video")];
+
+      const visibleVideos = videos
         .filter((video) => {
           if (!video.isConnected) return false;
 
@@ -118,16 +112,13 @@
           return rect.width > 0 && rect.height > 0;
         })
         .sort((a, b) => {
-          const aArea =
-            a.getBoundingClientRect().width * a.getBoundingClientRect().height;
+          const rectA = a.getBoundingClientRect();
+          const rectB = b.getBoundingClientRect();
 
-          const bArea =
-            b.getBoundingClientRect().width * b.getBoundingClientRect().height;
-
-          return bArea - aArea;
+          return rectB.width * rectB.height - rectA.width * rectA.height;
         });
 
-      return candidates[0] || videos[0] || null;
+      return visibleVideos[0] || null;
     }
 
     /* ======================================
@@ -135,7 +126,11 @@
     ====================================== */
 
     attachVideo(video) {
-      if (!video || !(video instanceof HTMLVideoElement)) {
+      if (
+        !video ||
+        !(video instanceof HTMLVideoElement) ||
+        !video.isConnected
+      ) {
         return false;
       }
 
@@ -174,8 +169,18 @@
       this.emit("videoDetected", {
         video,
         isPlaying: this.isPlaying(video),
+        state: this.getPlaybackState(video),
         url: location.href,
       });
+
+      // Catch a video that was already playing
+      // before the detector attached its listeners.
+      if (this.isPlaying(video)) {
+        this.emit("videoPlaying", {
+          video,
+          state: "PLAYING",
+        });
+      }
 
       return true;
     }
@@ -190,15 +195,15 @@
 
       this.videoListeners = [];
 
-      if (this.currentVideo) {
-        const previousVideo = this.currentVideo;
+      if (!this.currentVideo) return;
 
-        this.emit("videoRemoved", {
-          video: previousVideo,
-        });
+      const previousVideo = this.currentVideo;
 
-        this.currentVideo = null;
-      }
+      this.currentVideo = null;
+
+      this.emit("videoRemoved", {
+        video: previousVideo,
+      });
     }
 
     /* ======================================
@@ -220,7 +225,9 @@
     }
 
     getPlaybackState(video = this.currentVideo) {
-      if (!video) return "NO_VIDEO";
+      if (!video || !video.isConnected) {
+        return "NO_VIDEO";
+      }
 
       if (video.ended) return "ENDED";
 
@@ -249,19 +256,21 @@
       }
 
       const state = this.getPlaybackState(video);
+      const playing = this.isPlaying(video);
 
       this.emit("playbackChange", {
         video,
         event: event.type,
         state,
-        isPlaying: this.isPlaying(video),
+        isPlaying: playing,
       });
 
       switch (event.type) {
         case "play":
         case "playing":
         case "seeked":
-          if (this.isPlaying(video)) {
+        case "loadeddata":
+          if (playing) {
             this.emit("videoPlaying", {
               video,
               state,
@@ -306,7 +315,7 @@
           break;
 
         case "loadedmetadata":
-        case "loadeddata":
+        case "durationchange":
           this.emit("videoReady", {
             video,
             state,
@@ -316,7 +325,7 @@
     }
 
     /* ======================================
-       DOM CHANGE DETECTION
+       DOM OBSERVATION
     ====================================== */
 
     handleMutations() {
@@ -330,18 +339,11 @@
         } else {
           this.detachVideo();
         }
-
-        return;
-      }
-
-      // A video may be removed without a replacement.
-      if (this.currentVideo && !this.currentVideo.isConnected) {
-        this.detachVideo();
       }
     }
 
     /* ======================================
-       YOUTUBE SPA NAVIGATION
+       NAVIGATION
     ====================================== */
 
     handleNavigation() {
@@ -362,8 +364,8 @@
         currentUrl,
       });
 
-      // Allow YouTube to create the next player.
-      this.scheduleScan(100);
+      // Give YouTube time to replace its player.
+      this.scheduleScan(150);
     }
 
     installNavigationHooks() {
@@ -371,7 +373,7 @@
 
       window.addEventListener("popstate", this.handleNavigation);
 
-      window.addEventListener("visibilitychange", this.handleVisibility);
+      document.addEventListener("visibilitychange", this.handleVisibility);
 
       this.navigationObserver = new MutationObserver(() => {
         this.handleNavigation();
@@ -388,7 +390,7 @@
 
       window.removeEventListener("popstate", this.handleNavigation);
 
-      window.removeEventListener("visibilitychange", this.handleVisibility);
+      document.removeEventListener("visibilitychange", this.handleVisibility);
 
       this.navigationObserver?.disconnect();
 
@@ -396,17 +398,19 @@
     }
 
     /* ======================================
-       VISIBILITY
+       TAB VISIBILITY
     ====================================== */
 
     handleVisibility() {
       if (!this.currentVideo) return;
 
+      const video = this.currentVideo;
+
       this.emit("playbackChange", {
-        video: this.currentVideo,
+        video,
         event: "visibilitychange",
-        state: this.getPlaybackState(),
-        isPlaying: this.isPlaying(),
+        state: this.getPlaybackState(video),
+        isPlaying: this.isPlaying(video),
       });
     }
 
@@ -417,15 +421,16 @@
     scan() {
       if (!this.running) return;
 
-      const video = this.findVideo();
+      const detectedVideo = this.findVideo();
 
-      if (video && video !== this.currentVideo) {
-        this.attachVideo(video);
-      } else if (!video && this.currentVideo) {
-        this.detachVideo();
+      if (detectedVideo !== this.currentVideo) {
+        if (detectedVideo) {
+          this.attachVideo(detectedVideo);
+        } else {
+          this.detachVideo();
+        }
       }
 
-      // Detect missed state changes.
       if (this.currentVideo) {
         this.emit("playbackCheck", {
           video: this.currentVideo,
@@ -435,18 +440,19 @@
       }
     }
 
-    scheduleScan(delay = 100) {
+    scheduleScan(delay = 150) {
       if (!this.running) return;
 
-      clearTimeout(this.scanTimer);
+      clearTimeout(this.navigationTimer);
 
-      this.scanTimer = setTimeout(() => {
+      this.navigationTimer = setTimeout(() => {
+        this.navigationTimer = null;
         this.scan();
       }, delay);
     }
 
     /* ======================================
-       START / STOP
+       START
     ====================================== */
 
     start() {
@@ -455,7 +461,6 @@
       }
 
       this.running = true;
-
       this.lastUrl = location.href;
 
       this.observer = new MutationObserver(this.handleMutations);
@@ -469,22 +474,27 @@
 
       this.scan();
 
-      this.scanTimer = setInterval(() => {
+      this.intervalTimer = setInterval(() => {
         this.scan();
       }, this.scanInterval);
 
       console.info("[Ambient Flow] Video detector started.");
     }
 
+    /* ======================================
+       STOP
+    ====================================== */
+
     stop() {
       if (!this.running) return;
 
       this.running = false;
 
-      clearInterval(this.scanTimer);
-      clearTimeout(this.scanTimer);
+      clearInterval(this.intervalTimer);
+      clearTimeout(this.navigationTimer);
 
-      this.scanTimer = null;
+      this.intervalTimer = null;
+      this.navigationTimer = null;
 
       this.observer?.disconnect();
       this.observer = null;

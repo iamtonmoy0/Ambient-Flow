@@ -1,12 +1,11 @@
 /* ==========================================
    YOUTUBE AMBIENT FLOW
-   Playback-Gated Ambient Effects
+   Corrected Playback-Gated Ambient Effects
 ========================================== */
 
 /*
- * All ambient effects are disabled by default.
- * ThemeEngine adds data-af-enabled="true"
- * only while an active ambient theme is applied.
+ * The glow is hidden by default.
+ * JavaScript controls its visibility during playback.
  */
 
 #ambient-flow-glow {
@@ -20,40 +19,43 @@
 
   z-index: 0 !important;
 
-  opacity: 0 !important;
-  visibility: hidden !important;
+  opacity: 0;
+  visibility: hidden;
 
   background: none;
 
-  transition: none !important;
+  transition:
+    opacity 400ms ease,
+    background 400ms ease;
 
   contain: strict !important;
+  user-select: none !important;
 }
 
 /*
- * The JavaScript controller explicitly manages
- * the visibility of the glow.
+ * Allow JavaScript to show the glow only
+ * while an ambient theme is active.
  */
 
 html[data-af-enabled="true"] #ambient-flow-glow {
-  visibility: visible !important;
+  visibility: visible;
 }
 
 /*
- * Never show the glow when the extension theme
- * is inactive or has been reset.
+ * When the theme engine resets the page,
+ * force the glow to disappear.
  */
 
 html:not([data-af-enabled="true"]) #ambient-flow-glow {
   opacity: 0 !important;
   visibility: hidden !important;
   background: none !important;
+  transition: none !important;
 }
 
 /*
- * Remove any previous pseudo-element glow.
- * The JavaScript ambient layer is the only
- * component responsible for ambient lighting.
+ * JavaScript uses a separate ambient layer.
+ * Disable legacy player pseudo-element effects.
  */
 
 #movie_player::before,
@@ -63,8 +65,7 @@ html:not([data-af-enabled="true"]) #ambient-flow-glow {
 }
 
 /*
- * Do not interfere with YouTube controls,
- * playback interaction, or video rendering.
+ * Never intercept YouTube interaction.
  */
 
 #ambient-flow-glow,
@@ -74,7 +75,7 @@ html:not([data-af-enabled="true"]) #ambient-flow-glow {
 }
 
 /*
- * Reduced motion support.
+ * Accessibility.
  */
 
 @media (prefers-reduced-motion: reduce) {

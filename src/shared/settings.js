@@ -1,348 +1,300 @@
-/* ==========================================
-   YOUTUBE AMBIENT FLOW
-   Settings Manager
-========================================== */
+/**
+ * YouTube Ambient Flow
+ * Settings Manager
+ *
+ * Centralized settings validation, normalization,
+ * performance presets, and customization.
+ */
 
 (() => {
   "use strict";
 
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
-  const DEFAULTS = AF.DEFAULTS || {};
+  const DEFAULTS = {
+    enabled: true,
 
-  const VALID_MODES = ["cinematic", "minimal", "vibrant", "relax"];
+    samplingInterval: 700,
+    sceneDetection: true,
+    sceneThreshold: 18,
 
-  const VALID_COLOR_SOURCES = ["dominant", "average", "custom"];
+    ambientGlow: true,
+    smoothTransitions: true,
+    backgroundStyle: "gradient",
+    intensity: 0.65,
+    blur: 80,
 
-  const VALID_BACKGROUND_STYLES = ["gradient", "solid", "transparent"];
+    performanceMode: "balanced",
 
-  const VALID_PERFORMANCE_MODES = ["high", "balanced", "battery"];
+    frozen: false,
+    freezeBackground: false,
+    frozenColor: null,
 
-  const BOOLEAN_SETTINGS = [
-    "enabled",
-    "autoStart",
-    "sceneDetection",
-    "ambientGlow",
-    "readability",
-    "focusMode",
-    "shortsSupport",
-    "rememberChannelThemes",
-    "reducedMotion",
-    "frozen",
-  ];
+    focusModeEnabled: false,
+    hideSidebar: true,
+    hideComments: false,
+    hideRecommendations: false,
+    hideChat: true,
+    hideHeader: false,
+    hideShortsSidebar: false,
 
-  const NUMERIC_SETTINGS = {
-    intensity: { min: 0, max: 100 },
-    saturation: { min: 0, max: 100 },
-    blur: { min: 0, max: 100 },
-    transitionMs: { min: 0, max: 5000 },
-    sampleInterval: { min: 250, max: 10000 },
+    customColor: null,
+    lastDetectedColor: null,
+    lastUpdated: null,
   };
 
-  const STRING_SETTINGS = [
-    "mode",
-    "colorSource",
-    "backgroundStyle",
-    "performanceMode",
-    "frozenColor",
-    "customColor",
-    "lastColor",
+  const PRESETS = {
+    battery: {
+      samplingInterval: 1500,
+      sceneDetection: true,
+      sceneThreshold: 25,
+      ambientGlow: true,
+      smoothTransitions: false,
+      intensity: 0.4,
+      blur: 50,
+      performanceMode: "battery",
+    },
+
+    balanced: {
+      samplingInterval: 700,
+      sceneDetection: true,
+      sceneThreshold: 18,
+      ambientGlow: true,
+      smoothTransitions: true,
+      intensity: 0.65,
+      blur: 80,
+      performanceMode: "balanced",
+    },
+
+    quality: {
+      samplingInterval: 400,
+      sceneDetection: true,
+      sceneThreshold: 12,
+      ambientGlow: true,
+      smoothTransitions: true,
+      intensity: 0.8,
+      blur: 110,
+      performanceMode: "quality",
+    },
+  };
+
+  const RANGES = {
+    samplingInterval: {
+      min: 300,
+      max: 3000,
+    },
+
+    sceneThreshold: {
+      min: 1,
+      max: 100,
+    },
+
+    intensity: {
+      min: 0,
+      max: 1,
+    },
+
+    blur: {
+      min: 0,
+      max: 200,
+    },
+  };
+
+  const ENUMS = {
+    performanceMode: ["battery", "balanced", "quality"],
+
+    backgroundStyle: ["gradient", "solid", "transparent"],
+  };
+
+  const BOOLEAN_KEYS = [
+    "enabled",
+    "sceneDetection",
+    "ambientGlow",
+    "smoothTransitions",
+    "frozen",
+    "freezeBackground",
+    "focusModeEnabled",
+    "hideSidebar",
+    "hideComments",
+    "hideRecommendations",
+    "hideChat",
+    "hideHeader",
+    "hideShortsSidebar",
   ];
 
-  const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+  const COLOR_KEYS = ["frozenColor", "customColor", "lastDetectedColor"];
 
-  /**
-   * Validate a hexadecimal color.
-   */
-  function isValidColor(value) {
-    return typeof value === "string" && COLOR_PATTERN.test(value);
+  function isHexColor(value) {
+    return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
   }
 
-  /**
-   * Clamp a numeric setting to its allowed range.
-   */
-  function normalizeNumber(key, value) {
-    const rule = NUMERIC_SETTINGS[key];
-
-    if (!rule) return value;
-
+  function clamp(value, min, max) {
     const number = Number(value);
 
     if (!Number.isFinite(number)) {
-      return DEFAULTS[key];
+      return min;
     }
 
-    return Math.min(rule.max, Math.max(rule.min, number));
+    return Math.max(min, Math.min(max, number));
   }
 
-  /**
-   * Validate one setting.
-   */
-  function validateSetting(key, value) {
-    if (BOOLEAN_SETTINGS.includes(key)) {
-      return typeof value === "boolean" ? value : DEFAULTS[key];
+  function normalizeColor(value) {
+    if (value === null || value === "") {
+      return null;
     }
 
-    if (NUMERIC_SETTINGS[key]) {
-      return normalizeNumber(key, value);
-    }
-
-    if (key === "mode") {
-      return VALID_MODES.includes(value) ? value : DEFAULTS.mode;
-    }
-
-    if (key === "colorSource") {
-      return VALID_COLOR_SOURCES.includes(value) ? value : DEFAULTS.colorSource;
-    }
-
-    if (key === "backgroundStyle") {
-      return VALID_BACKGROUND_STYLES.includes(value)
-        ? value
-        : DEFAULTS.backgroundStyle;
-    }
-
-    if (key === "performanceMode") {
-      return VALID_PERFORMANCE_MODES.includes(value)
-        ? value
-        : DEFAULTS.performanceMode;
-    }
-
-    if (key === "customColor" || key === "frozenColor" || key === "lastColor") {
-      return isValidColor(value) ? value : DEFAULTS[key];
-    }
-
-    if (key === "channelProfiles") {
-      return validateChannelProfiles(value);
-    }
-
-    return undefined;
+    return isHexColor(value) ? value : null;
   }
 
-  /**
-   * Validate saved channel profiles.
-   */
-  function validateChannelProfiles(profiles) {
-    if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) {
-      return {};
+  function normalizeValue(key, value) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) {
+      return undefined;
     }
 
-    const result = {};
-
-    for (const [channel, color] of Object.entries(profiles)) {
-      if (
-        typeof channel === "string" &&
-        channel.length <= 200 &&
-        isValidColor(color)
-      ) {
-        result[channel] = color;
-      }
+    if (BOOLEAN_KEYS.includes(key)) {
+      return Boolean(value);
     }
 
-    return result;
+    if (RANGES[key]) {
+      return clamp(value, RANGES[key].min, RANGES[key].max);
+    }
+
+    if (ENUMS[key]) {
+      return ENUMS[key].includes(value) ? value : DEFAULTS[key];
+    }
+
+    if (COLOR_KEYS.includes(key)) {
+      return normalizeColor(value);
+    }
+
+    if (key === "lastUpdated") {
+      return Number.isFinite(value) ? value : null;
+    }
+
+    return value;
   }
 
-  /**
-   * Validate a settings object.
-   * Unknown keys are ignored.
-   */
   function validate(settings = {}) {
+    const errors = [];
+    const normalized = {};
+
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-      return {};
+      return {
+        valid: false,
+        errors: ["Settings must be an object."],
+        settings: { ...DEFAULTS },
+      };
     }
 
-    const result = {};
+    for (const key of Object.keys(DEFAULTS)) {
+      const value = Object.prototype.hasOwnProperty.call(settings, key)
+        ? settings[key]
+        : DEFAULTS[key];
 
-    for (const key of [
-      ...BOOLEAN_SETTINGS,
-      ...Object.keys(NUMERIC_SETTINGS),
-      ...STRING_SETTINGS,
-      "channelProfiles",
-    ]) {
-      if (!Object.prototype.hasOwnProperty.call(settings, key)) {
-        continue;
+      if (
+        COLOR_KEYS.includes(key) &&
+        value !== null &&
+        value !== "" &&
+        !isHexColor(value)
+      ) {
+        errors.push(`${key} must be a valid HEX color.`);
       }
 
-      const normalized = validateSetting(key, settings[key]);
-
-      if (normalized !== undefined) {
-        result[key] = normalized;
-      }
+      normalized[key] = normalizeValue(key, value);
     }
 
-    return result;
-  }
+    // Keep both frozen setting names compatible.
+    const frozen = Boolean(normalized.frozen || normalized.freezeBackground);
 
-  /**
-   * Merge defaults with user settings.
-   */
-  function merge(settings = {}) {
+    normalized.frozen = frozen;
+    normalized.freezeBackground = frozen;
+
     return {
-      ...DEFAULTS,
-      ...validate(settings),
+      valid: errors.length === 0,
+      errors,
+      settings: normalized,
     };
   }
 
-  /**
-   * Get a mode configuration.
-   */
-  function getMode(modeName) {
-    const selectedMode = VALID_MODES.includes(modeName)
-      ? modeName
-      : DEFAULTS.mode;
+  function normalize(settings = {}) {
+    return validate(settings).settings;
+  }
+
+  function getDefaults() {
+    return { ...DEFAULTS };
+  }
+
+  function getPreset(name) {
+    if (!PRESETS[name]) {
+      return null;
+    }
 
     return {
-      ...(AF.MODES?.[selectedMode] || AF.MODES?.cinematic || {}),
+      ...PRESETS[name],
     };
   }
 
-  /**
-   * Get a performance configuration.
-   */
-  function getPerformance(modeName) {
-    const selectedMode = VALID_PERFORMANCE_MODES.includes(modeName)
-      ? modeName
-      : DEFAULTS.performanceMode;
+  function applyPreset(name, currentSettings = {}) {
+    const preset = getPreset(name);
 
-    return {
-      ...(AF.PERFORMANCE?.[selectedMode] || AF.PERFORMANCE?.balanced || {}),
+    if (!preset) {
+      throw new Error(`Unknown performance preset: ${name}`);
+    }
+
+    const merged = {
+      ...currentSettings,
+      ...preset,
     };
+
+    return normalize(merged);
   }
 
-  /**
-   * Calculate settings after applying the selected mode.
-   *
-   * Explicit user values take priority over mode presets.
-   */
-  function getEffective(settings = {}) {
-    const normalized = merge(settings);
-    const mode = getMode(normalized.mode);
-    const performance = getPerformance(normalized.performanceMode);
-
-    return {
-      ...normalized,
-
-      intensity: normalized.intensity ?? mode.intensity,
-      saturation: normalized.saturation ?? mode.saturation,
-      blur: normalized.blur ?? mode.blur,
-      transitionMs: normalized.transitionMs ?? mode.transitionMs,
-
-      ...{
-        sampleInterval: normalized.sampleInterval ?? performance.sampleInterval,
-      },
-    };
+  function getPresetNames() {
+    return Object.keys(PRESETS);
   }
 
-  /**
-   * Read and validate settings from extension storage.
-   */
-  async function load() {
-    if (!AF.storage?.getAll) {
-      return merge({});
-    }
-
-    try {
-      const stored = await AF.storage.getAll();
-      return merge(stored);
-    } catch (error) {
-      console.error("[Ambient Flow] Could not load settings:", error);
-
-      return merge({});
-    }
+  function getRanges() {
+    return JSON.parse(JSON.stringify(RANGES));
   }
 
-  /**
-   * Validate and save settings.
-   */
-  async function save(settings = {}) {
-    const normalized = validate(settings);
-
-    if (!AF.storage?.set) {
-      throw new Error("Settings storage is unavailable.");
-    }
-
-    await AF.storage.set(normalized);
-
-    return normalized;
+  function getEnums() {
+    return JSON.parse(JSON.stringify(ENUMS));
   }
 
-  /**
-   * Restore default settings.
-   */
-  async function reset() {
-    if (!AF.storage?.reset) {
-      throw new Error("Settings storage is unavailable.");
+  function update(currentSettings, updates) {
+    if (!updates || typeof updates !== "object" || Array.isArray(updates)) {
+      throw new Error("Invalid settings update.");
     }
 
-    await AF.storage.reset();
-
-    return merge({});
+    return normalize({
+      ...currentSettings,
+      ...updates,
+    });
   }
 
-  /**
-   * Get a safe settings export.
-   */
-  async function exportSettings() {
-    const settings = await load();
-
-    return JSON.stringify(
-      {
-        application: "YouTube Ambient Flow",
-        version: chrome.runtime.getManifest().version,
-        exportedAt: new Date().toISOString(),
-        settings,
-      },
-      null,
-      2,
-    );
-  }
-
-  /**
-   * Import settings from JSON.
-   */
-  async function importSettings(json) {
-    let parsed;
-
-    try {
-      parsed = typeof json === "string" ? JSON.parse(json) : json;
-    } catch {
-      throw new Error("Invalid settings JSON.");
-    }
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("Settings file must contain an object.");
-    }
-
-    const imported = parsed.settings || parsed;
-
-    const normalized = validate(imported);
-
-    if (Object.keys(normalized).length === 0) {
-      throw new Error("No valid settings were found.");
-    }
-
-    await save(normalized);
-
-    return normalized;
+  function isValidKey(key) {
+    return Object.prototype.hasOwnProperty.call(DEFAULTS, key);
   }
 
   AF.settings = {
     DEFAULTS,
-    VALID_MODES,
-    VALID_COLOR_SOURCES,
-    VALID_BACKGROUND_STYLES,
-    VALID_PERFORMANCE_MODES,
+    PRESETS,
+    RANGES,
+    ENUMS,
 
-    isValidColor,
-    validateSetting,
     validate,
-    merge,
-    getMode,
-    getPerformance,
-    getEffective,
-    load,
-    save,
-    reset,
-    exportSettings,
-    importSettings,
+    normalize,
+    update,
+
+    getDefaults,
+    getPreset,
+    applyPreset,
+    getPresetNames,
+    getRanges,
+    getEnums,
+
+    isHexColor,
+    isValidKey,
+    clamp,
   };
 })();
