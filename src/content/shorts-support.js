@@ -2,8 +2,7 @@
  * YouTube Ambient Flow
  * Shorts Support
  *
- * Detects YouTube Shorts pages and tracks the active Shorts video.
- * VideoDetector remains responsible for playback events and video detection.
+ * Detects YouTube Shorts navigation and active videos.
  */
 
 (() => {
@@ -13,376 +12,338 @@
 
   class ShortsSupport {
     constructor() {
-      this.enabled = true;
-      this.started = false;
-      this.active = false;
+      this.videoDetector = AF.videoDetector || null;
+      this.youtubeDetector = AF.youtubeDetector || null;
+
+      this.observer = null;
+      this.isRunning = false;
+      this.isDestroyed = false;
 
       this.currentVideo = null;
       this.currentVideoId = null;
 
-      this.observer = null;
-      this.routeTimer = null;
-      this.syncTimer = null;
-
+      this.listeners = new Map();
       this.unsubscribers = [];
-      this.listeners = new Set();
 
-      this.boundVisibilityChange = this.handleVisibilityChange.bind(this);
+      this.boundMutationHandler = this.handleMutations.bind(this);
+
+      this.boundNavigationHandler = this.handleNavigation.bind(this);
+
+      this.boundVideoChangeHandler = this.handleVideoChange.bind(this);
+
+      this.boundUrlChangeHandler = this.checkPage.bind(this);
     }
 
-    onChange(callback) {
+    on(event, callback) {
       if (typeof callback !== "function") {
         return () => {};
       }
 
-      this.listeners.add(callback);
+      if (!this.listeners.has(event)) {
+        this.listeners.set(event, new Set());
+      }
 
-      return () => {
-        this.listeners.delete(callback);
-      };
+      this.listeners.get(event).add(callback);
+
+      return () => this.off(event, callback);
     }
 
-    emit(eventName, details = {}) {
-      const event = {
-        type: eventName,
-        isShorts: this.active,
-        video: this.currentVideo,
-        videoId: this.currentVideoId,
-        timestamp: Date.now(),
-        ...details,
-      };
+    off(event, callback) {
+      this.listeners.get(event)?.delete(callback);
+    }
 
-      this.listeners.forEach((callback) => {
+    emit(event, data = {}) {
+      this.listeners.get(event)?.forEach((callback) => {
         try {
-          callback(event);
+          callback(data);
         } catch (error) {
-          console.error("[Ambient Flow] Shorts listener error:", error);
+          console.error("[AmbientFlow Shorts] Listener error:", error);
         }
       });
     }
 
     isShortsPage() {
-      return (
-        window.location.pathname.startsWith("/shorts/") ||
-        Boolean(document.querySelector("ytd-reel-video-renderer"))
-      );
+      return window.location.pathname.startsWith("/shorts/");
     }
 
     getVideoId() {
-      const match = window.location.pathname.match(/^\/shorts\/([^/?#]+)/);
+      if (!this.isShortsPage()) return null;
 
-      return match ? match[1] : null;
+      const parts = window.location.pathname.split("/");
+
+      return parts[2] || null;
+    }
+
+    findShortsRenderer() {
+      return (
+        document.querySelector("ytd-reel-video-renderer[is-active]") ||
+        document.querySelector("ytd-reel-video-renderer")
+      );
     }
 
     findShortsVideo() {
-      const selectors = [
-        "ytd-reel-video-renderer[is-active] video",
-        'ytd-reel-video-renderer[aria-hidden="false"] video',
-        "ytd-shorts video",
-        "#shorts-container video",
-        "ytd-reel-video-renderer video",
-      ];
+      const renderer = this.findShortsRenderer();
 
-      for (const selector of selectors) {
-        const videos = document.querySelectorAll(selector);
+      if (renderer) {
+        const video = renderer.querySelector("video");
 
-        for (const video of videos) {
-          if (
-            video instanceof HTMLVideoElement &&
-            video.isConnected &&
-            video.videoWidth > 0 &&
-            video.videoHeight > 0
-          ) {
-            return video;
-          }
+        if (video instanceof HTMLVideoElement) {
+          return video;
         }
       }
 
-      // Use the shared detector as a fallback.
-      const detectedVideo = AF.videoDetector?.currentVideo;
+      const selectors = [
+        "ytd-reel-video-renderer video",
+        "ytd-shorts video",
+        "#shorts-player video",
+        "video.html5-main-video",
+      ];
 
-      if (
-        detectedVideo instanceof HTMLVideoElement &&
-        detectedVideo.isConnected
-      ) {
-        return detectedVideo;
+      for (const selector of selectors) {
+        const video = document.querySelector(selector);
+
+        if (video instanceof HTMLVideoElement) {
+          return video;
+        }
       }
 
       return null;
     }
 
-    updatePage() {
-      if (!this.enabled || !this.started) {
-        return;
-      }
+    handleNavigation() {
+      if (!this.isRunning) return;
 
-      const isShorts = this.isShortsPage();
-      const videoId = isShorts ? this.getVideoId() : null;
+      this.checkPage();
+    }
 
-      if (isShorts !== this.active) {
-        this.active = isShorts;
-        this.currentVideo = null;
-        this.currentVideoId = videoId;
+    handleMutations() {
+      if (!this.isRunning) return;
 
-        this.emit(isShorts ? "shortsEntered" : "shortsExited", {
-          videoId,
-        });
-
-        if (isShorts) {
-          this.startObserver();
-          this.syncVideo();
-        } else {
-          this.stopObserver();
+      if (!this.isShortsPage()) {
+        if (this.currentVideo) {
+          this.clearCurrentVideo();
         }
 
         return;
       }
 
-      if (isShorts && videoId !== this.currentVideoId) {
-        this.currentVideoId = videoId;
-        this.currentVideo = null;
-
-        this.emit("shortsVideoChanged", {
-          videoId,
-        });
-
-        this.syncVideo();
-      }
-
-      if (isShorts) {
-        this.syncVideo();
-      }
+      this.detectActiveVideo();
     }
 
-    syncVideo() {
-      if (!this.active || !this.enabled || !this.started) {
+    handleVideoChange(data = {}) {
+      if (!this.isRunning || !this.isShortsPage()) {
         return;
       }
 
+      const video = data.video || data.element;
+
+      if (video instanceof HTMLVideoElement && video.isConnected) {
+        this.setCurrentVideo(video);
+      }
+    }
+
+    checkPage() {
+      if (!this.isRunning) return;
+
+      if (!this.isShortsPage()) {
+        this.clearCurrentVideo();
+
+        this.emit("shortsExited");
+
+        return;
+      }
+
+      const videoId = this.getVideoId();
+
+      if (videoId !== this.currentVideoId) {
+        this.currentVideoId = videoId;
+        this.currentVideo = null;
+
+        this.emit("shortsChanged", {
+          videoId,
+        });
+      }
+
+      this.detectActiveVideo();
+    }
+
+    detectActiveVideo() {
+      if (!this.isShortsPage()) return;
+
       const video = this.findShortsVideo();
 
-      if (!video || video === this.currentVideo) {
+      if (!video) return;
+
+      this.setCurrentVideo(video);
+    }
+
+    setCurrentVideo(video) {
+      if (!(video instanceof HTMLVideoElement)) return;
+
+      if (this.currentVideo === video) return;
+
+      this.currentVideo = video;
+
+      const videoId = this.getVideoId();
+
+      this.currentVideoId = videoId;
+
+      this.emit("videoChanged", {
+        video,
+        videoId,
+        paused: video.paused,
+        ended: video.ended,
+      });
+
+      this.emit("shortsVideoDetected", {
+        video,
+        videoId,
+      });
+    }
+
+    clearCurrentVideo() {
+      if (!this.currentVideo && !this.currentVideoId) {
         return;
       }
 
       const previousVideo = this.currentVideo;
-      this.currentVideo = video;
+      const previousVideoId = this.currentVideoId;
 
-      this.emit("activeVideoChanged", {
-        video,
-        previousVideo,
-        videoId: this.currentVideoId,
-        isPlaying: !video.paused && !video.ended,
+      this.currentVideo = null;
+      this.currentVideoId = null;
+
+      this.emit("videoRemoved", {
+        video: previousVideo,
+        videoId: previousVideoId,
       });
-    }
-
-    scheduleSync(delay = 150) {
-      if (this.syncTimer) {
-        clearTimeout(this.syncTimer);
-      }
-
-      this.syncTimer = setTimeout(() => {
-        this.syncTimer = null;
-        this.syncVideo();
-      }, delay);
-    }
-
-    startObserver() {
-      if (this.observer || !document.body) {
-        return;
-      }
-
-      this.observer = new MutationObserver(() => {
-        this.scheduleSync();
-      });
-
-      this.observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["is-active", "aria-hidden"],
-      });
-    }
-
-    stopObserver() {
-      if (this.observer) {
-        this.observer.disconnect();
-        this.observer = null;
-      }
-
-      if (this.syncTimer) {
-        clearTimeout(this.syncTimer);
-        this.syncTimer = null;
-      }
-    }
-
-    handleNavigation() {
-      if (!this.started) {
-        return;
-      }
-
-      if (this.routeTimer) {
-        clearTimeout(this.routeTimer);
-      }
-
-      this.routeTimer = setTimeout(() => {
-        this.routeTimer = null;
-        this.updatePage();
-      }, 100);
-    }
-
-    handleVisibilityChange() {
-      if (!document.hidden && this.active) {
-        this.scheduleSync(100);
-      }
     }
 
     subscribeToNavigation() {
-      const youtubeDetector = AF.youtubeDetector;
-
-      if (youtubeDetector?.onChange) {
-        const unsubscribe = youtubeDetector.onChange(() => {
-          this.handleNavigation();
-        });
+      if (this.youtubeDetector?.onChange) {
+        const unsubscribe = this.youtubeDetector.onChange(
+          this.boundNavigationHandler,
+        );
 
         if (typeof unsubscribe === "function") {
           this.unsubscribers.push(unsubscribe);
         }
       }
 
-      const videoDetector = AF.videoDetector;
-
-      if (videoDetector?.on) {
-        const unsubscribe = videoDetector.on("videoDetected", () => {
-          this.scheduleSync(100);
-        });
+      if (this.videoDetector?.on) {
+        const unsubscribe = this.videoDetector.on(
+          "videoDetected",
+          this.boundVideoChangeHandler,
+        );
 
         if (typeof unsubscribe === "function") {
           this.unsubscribers.push(unsubscribe);
         }
-
-        const navigationUnsubscribe = videoDetector.on("navigation", () => {
-          this.handleNavigation();
-        });
-
-        if (typeof navigationUnsubscribe === "function") {
-          this.unsubscribers.push(navigationUnsubscribe);
-        }
       }
+
+      window.addEventListener("popstate", this.boundUrlChangeHandler);
+
+      window.addEventListener("yt-navigate-finish", this.boundUrlChangeHandler);
 
       window.addEventListener(
+        "yt-page-data-updated",
+        this.boundUrlChangeHandler,
+      );
+    }
+
+    unsubscribeFromNavigation() {
+      window.removeEventListener("popstate", this.boundUrlChangeHandler);
+
+      window.removeEventListener(
         "yt-navigate-finish",
-        this.handleNavigation.bind(this),
+        this.boundUrlChangeHandler,
       );
 
-      window.addEventListener("popstate", this.handleNavigation.bind(this));
-
-      document.addEventListener("visibilitychange", this.boundVisibilityChange);
-    }
-
-    start() {
-      if (this.started) {
-        return;
-      }
-
-      this.started = true;
-      this.subscribeToNavigation();
-      this.updatePage();
-
-      console.info("[Ambient Flow] Shorts support started.");
-    }
-
-    stop() {
-      if (!this.started) {
-        return;
-      }
-
-      this.started = false;
-
-      this.stopObserver();
-
-      if (this.routeTimer) {
-        clearTimeout(this.routeTimer);
-        this.routeTimer = null;
-      }
+      window.removeEventListener(
+        "yt-page-data-updated",
+        this.boundUrlChangeHandler,
+      );
 
       this.unsubscribers.forEach((unsubscribe) => {
         try {
           unsubscribe();
         } catch (error) {
-          console.warn(
-            "[Ambient Flow] Could not remove Shorts listener:",
-            error,
-          );
+          console.warn("[AmbientFlow Shorts] Unsubscribe failed:", error);
         }
       });
 
       this.unsubscribers = [];
+    }
 
-      window.removeEventListener("yt-navigate-finish", this.handleNavigation);
+    startObserver() {
+      if (this.observer || !document.body) return;
 
-      window.removeEventListener("popstate", this.handleNavigation);
+      this.observer = new MutationObserver(this.boundMutationHandler);
 
-      document.removeEventListener(
-        "visibilitychange",
-        this.boundVisibilityChange,
-      );
+      this.observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["is-active"],
+      });
+    }
 
-      this.currentVideo = null;
-      this.currentVideoId = null;
-      this.active = false;
+    stopObserver() {
+      this.observer?.disconnect();
+      this.observer = null;
+    }
+
+    start() {
+      if (this.isRunning || this.isDestroyed) return;
+
+      this.isRunning = true;
+
+      this.subscribeToNavigation();
+      this.startObserver();
+      this.checkPage();
+
+      this.emit("started");
+
+      return this;
+    }
+
+    stop() {
+      if (!this.isRunning) return;
+
+      this.isRunning = false;
+
+      this.stopObserver();
+      this.unsubscribeFromNavigation();
+
+      this.clearCurrentVideo();
 
       this.emit("stopped");
-
-      console.info("[Ambient Flow] Shorts support stopped.");
-    }
-
-    setEnabled(enabled) {
-      this.enabled = Boolean(enabled);
-
-      if (!this.enabled) {
-        this.stopObserver();
-        this.currentVideo = null;
-        this.currentVideoId = null;
-        this.active = false;
-        this.emit("disabled");
-        return;
-      }
-
-      if (this.started) {
-        this.updatePage();
-      }
-    }
-
-    isActive() {
-      return this.active;
-    }
-
-    getCurrentVideo() {
-      return this.currentVideo;
     }
 
     getStatus() {
       return {
-        enabled: this.enabled,
-        started: this.started,
-        isShorts: this.active,
+        running: this.isRunning,
+        isShorts: this.isShortsPage(),
         videoId: this.currentVideoId,
-        hasVideo: Boolean(this.currentVideo),
-        isPlaying: Boolean(
-          this.currentVideo &&
-          !this.currentVideo.paused &&
-          !this.currentVideo.ended,
-        ),
+        videoConnected: Boolean(this.currentVideo?.isConnected),
+        paused: this.currentVideo?.paused ?? true,
       };
     }
 
     destroy() {
+      if (this.isDestroyed) return;
+
       this.stop();
+
       this.listeners.clear();
+
+      this.currentVideo = null;
+      this.currentVideoId = null;
+
+      this.isDestroyed = true;
     }
   }
 
   AF.ShortsSupport = ShortsSupport;
+
   AF.shortsSupport = AF.shortsSupport || new ShortsSupport();
 })();

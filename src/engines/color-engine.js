@@ -1,115 +1,253 @@
+/**
+ * YouTube Ambient Flow
+ * Color Engine
+ *
+ * Shared color utilities for palette generation,
+ * gradient generation, and readability.
+ */
+
 (() => {
   "use strict";
 
-  const AF = window.AmbientFlow;
-  const utils = AF.utils;
+  const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
-  const colorEngine = {
-    // Extract average RGB color
-    average(data) {
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let count = 0;
+  class ColorEngine {
+    clamp(value, min = 0, max = 255) {
+      return Math.max(min, Math.min(max, value));
+    }
 
-      for (let i = 0; i < data.length; i += 4) {
-        const alpha = data[i + 3] / 255;
-
-        if (alpha < 0.5) continue;
-
-        r += data[i];
-        g += data[i + 1];
-        b += data[i + 2];
-
-        count++;
+    normalize(color) {
+      if (typeof color === "string") {
+        return this.hexToRgb(color);
       }
 
-      if (!count) {
-        return { r: 36, g: 59, b: 85 };
+      if (
+        !color ||
+        !Number.isFinite(Number(color.r)) ||
+        !Number.isFinite(Number(color.g)) ||
+        !Number.isFinite(Number(color.b))
+      ) {
+        return null;
       }
 
       return {
-        r: r / count,
-        g: g / count,
-        b: b / count,
+        r: this.clamp(Number(color.r)),
+        g: this.clamp(Number(color.g)),
+        b: this.clamp(Number(color.b)),
       };
-    },
+    }
 
-    // Extract dominant color using RGB buckets
-    dominant(data) {
-      const buckets = new Map();
+    hexToRgb(hex) {
+      if (typeof hex !== "string") return null;
 
-      for (let i = 0; i < data.length; i += 16) {
-        const alpha = data[i + 3];
+      let value = hex.trim().replace(/^#/, "");
 
-        if (alpha < 128) continue;
-
-        const r = Math.round(data[i] / 32) * 32;
-        const g = Math.round(data[i + 1] / 32) * 32;
-        const b = Math.round(data[i + 2] / 32) * 32;
-
-        const key = `${r},${g},${b}`;
-
-        buckets.set(key, (buckets.get(key) || 0) + 1);
+      if (/^[0-9a-f]{3}$/i.test(value)) {
+        value = value
+          .split("")
+          .map((character) => character + character)
+          .join("");
       }
 
-      let bestColor = "32,64,96";
-      let maxCount = 0;
-
-      for (const [color, count] of buckets) {
-        if (count > maxCount) {
-          maxCount = count;
-          bestColor = color;
-        }
+      if (!/^[0-9a-f]{6}$/i.test(value)) {
+        return null;
       }
 
-      const [r, g, b] = bestColor.split(",").map(Number);
+      return {
+        r: parseInt(value.slice(0, 2), 16),
+        g: parseInt(value.slice(2, 4), 16),
+        b: parseInt(value.slice(4, 6), 16),
+      };
+    }
 
-      return { r, g, b };
-    },
+    rgbToHex(color) {
+      const rgb = this.normalize(color);
 
-    // Extract a color from image data
-    extract(imageData, source = "dominant") {
-      if (!imageData || !imageData.data) {
-        return { r: 36, g: 59, b: 85 };
+      if (!rgb) return null;
+
+      const toHex = (value) => Math.round(value).toString(16).padStart(2, "0");
+
+      return `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+    }
+
+    rgbToString(color, alpha = 1) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      const opacity = Math.max(0, Math.min(1, Number(alpha)));
+
+      return `rgba(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)}, ${opacity})`;
+    }
+
+    parseColor(value) {
+      if (typeof value !== "string") return null;
+
+      const input = value.trim();
+
+      if (input.startsWith("#")) {
+        return this.hexToRgb(input);
       }
 
-      if (source === "average") {
-        return this.average(imageData.data);
+      const match = input.match(
+        /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*[\d.]+\s*)?\)$/i,
+      );
+
+      if (!match) return null;
+
+      return {
+        r: this.clamp(Number(match[1])),
+        g: this.clamp(Number(match[2])),
+        b: this.clamp(Number(match[3])),
+      };
+    }
+
+    brightness(color) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+    }
+
+    relativeLuminance(color) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      const linearize = (channel) => {
+        const value = channel / 255;
+
+        return value <= 0.04045
+          ? value / 12.92
+          : Math.pow((value + 0.055) / 1.055, 2.4);
+      };
+
+      return (
+        0.2126 * linearize(rgb.r) +
+        0.7152 * linearize(rgb.g) +
+        0.0722 * linearize(rgb.b)
+      );
+    }
+
+    contrastRatio(colorA, colorB) {
+      const luminanceA = this.relativeLuminance(colorA);
+      const luminanceB = this.relativeLuminance(colorB);
+
+      if (luminanceA === null || luminanceB === null) {
+        return null;
       }
 
-      return this.dominant(imageData.data);
-    },
+      const lighter = Math.max(luminanceA, luminanceB);
+      const darker = Math.min(luminanceA, luminanceB);
 
-    // Convert RGB to HSL
-    rgbToHsl({ r, g, b }) {
-      r /= 255;
-      g /= 255;
-      b /= 255;
+      return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    bestTextColor(background) {
+      const black = { r: 0, g: 0, b: 0 };
+      const white = { r: 255, g: 255, b: 255 };
+
+      const blackContrast = this.contrastRatio(background, black);
+      const whiteContrast = this.contrastRatio(background, white);
+
+      if (blackContrast === null || whiteContrast === null) {
+        return "#ffffff";
+      }
+
+      return blackContrast >= whiteContrast ? "#000000" : "#ffffff";
+    }
+
+    adjustBrightness(color, amount = 0) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      const adjustment = Number(amount);
+
+      if (!Number.isFinite(adjustment)) return rgb;
+
+      return {
+        r: this.clamp(rgb.r + adjustment),
+        g: this.clamp(rgb.g + adjustment),
+        b: this.clamp(rgb.b + adjustment),
+      };
+    }
+
+    darken(color, amount = 20) {
+      return this.adjustBrightness(color, -Math.abs(amount));
+    }
+
+    lighten(color, amount = 20) {
+      return this.adjustBrightness(color, Math.abs(amount));
+    }
+
+    mix(colorA, colorB, amount = 0.5) {
+      const a = this.normalize(colorA);
+      const b = this.normalize(colorB);
+
+      if (!a || !b) return null;
+
+      const t = Math.max(0, Math.min(1, Number(amount)));
+
+      return {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+      };
+    }
+
+    distance(colorA, colorB) {
+      const a = this.normalize(colorA);
+      const b = this.normalize(colorB);
+
+      if (!a || !b) return null;
+
+      const redMean = (a.r + b.r) / 2;
+      const red = a.r - b.r;
+      const green = a.g - b.g;
+      const blue = a.b - b.b;
+
+      return Math.sqrt(
+        (2 + redMean / 256) * red * red +
+          4 * green * green +
+          (2 + (255 - redMean) / 256) * blue * blue,
+      );
+    }
+
+    rgbToHsl(color) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      const r = rgb.r / 255;
+      const g = rgb.g / 255;
+      const b = rgb.b / 255;
 
       const max = Math.max(r, g, b);
       const min = Math.min(r, g, b);
 
       let h = 0;
       let s = 0;
+
       const l = (max + min) / 2;
 
       if (max !== min) {
-        const d = max - min;
+        const delta = max - min;
 
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
 
         switch (max) {
           case r:
-            h = (g - b) / d + (g < b ? 6 : 0);
+            h = (g - b) / delta + (g < b ? 6 : 0);
             break;
 
           case g:
-            h = (b - r) / d + 2;
+            h = (b - r) / delta + 2;
             break;
 
           case b:
-            h = (r - g) / d + 4;
+            h = (r - g) / delta + 4;
             break;
         }
 
@@ -121,15 +259,31 @@
         s: s * 100,
         l: l * 100,
       };
-    },
+    }
 
-    // Convert HSL to RGB
-    hslToRgb({ h, s, l }) {
+    hslToRgb(hsl) {
+      if (
+        !hsl ||
+        !Number.isFinite(Number(hsl.h)) ||
+        !Number.isFinite(Number(hsl.s)) ||
+        !Number.isFinite(Number(hsl.l))
+      ) {
+        return null;
+      }
+
+      let h = ((Number(hsl.h) % 360) + 360) % 360;
+      let s = Math.max(0, Math.min(100, Number(hsl.s))) / 100;
+      let l = Math.max(0, Math.min(100, Number(hsl.l))) / 100;
+
       h /= 360;
-      s /= 100;
-      l /= 100;
 
-      const hue = (p, q, t) => {
+      if (s === 0) {
+        const gray = Math.round(l * 255);
+
+        return { r: gray, g: gray, b: gray };
+      }
+
+      const hueToRgb = (p, q, t) => {
         if (t < 0) t += 1;
         if (t > 1) t -= 1;
 
@@ -140,88 +294,78 @@
         return p;
       };
 
-      if (s === 0) {
-        const value = l * 255;
-
-        return {
-          r: value,
-          g: value,
-          b: value,
-        };
-      }
-
       const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
 
       const p = 2 * l - q;
 
       return {
-        r: hue(p, q, h + 1 / 3) * 255,
-        g: hue(p, q, h) * 255,
-        b: hue(p, q, h - 1 / 3) * 255,
+        r: Math.round(hueToRgb(p, q, h + 1 / 3) * 255),
+        g: Math.round(hueToRgb(p, q, h) * 255),
+        b: Math.round(hueToRgb(p, q, h - 1 / 3) * 255),
       };
-    },
+    }
 
-    // Adjust saturation
-    adjustSaturation(color, amount = 70) {
+    rotateHue(color, degrees = 30) {
       const hsl = this.rgbToHsl(color);
 
-      hsl.s = utils.clamp(amount, 0, 100);
+      if (!hsl) return null;
 
-      return this.hslToRgb(hsl);
-    },
+      return this.hslToRgb({
+        ...hsl,
+        h: (hsl.h + Number(degrees) + 360) % 360,
+      });
+    }
 
-    // Adjust color brightness
-    adjustBrightness(color, amount = 0) {
+    complementary(color) {
+      return this.rotateHue(color, 180);
+    }
+
+    analogous(color, angle = 30) {
+      return {
+        previous: this.rotateHue(color, -Math.abs(angle)),
+        next: this.rotateHue(color, Math.abs(angle)),
+      };
+    }
+
+    saturate(color, amount = 10) {
       const hsl = this.rgbToHsl(color);
 
-      hsl.l = utils.clamp(hsl.l + amount, 0, 100);
+      if (!hsl) return null;
 
-      return this.hslToRgb(hsl);
-    },
+      return this.hslToRgb({
+        ...hsl,
+        s: Math.max(0, Math.min(100, hsl.s + Number(amount))),
+      });
+    }
 
-    // Create a darker version of a color
-    darken(color, amount = 25) {
-      return this.adjustBrightness(color, -amount);
-    },
+    desaturate(color, amount = 10) {
+      return this.saturate(color, -Math.abs(amount));
+    }
 
-    // Create a lighter version of a color
-    lighten(color, amount = 25) {
-      return this.adjustBrightness(color, amount);
-    },
+    isDark(color, threshold = 128) {
+      const value = this.brightness(color);
 
-    // Smoothly interpolate between two colors
-    smooth(previous, next, factor = 0.2) {
-      if (!previous) return next;
+      return value === null ? false : value < threshold;
+    }
 
-      return utils.mix(previous, next, utils.clamp(factor, 0, 1));
-    },
+    createHarmony(color) {
+      const rgb = this.normalize(color);
 
-    // Calculate color difference
-    distance(a, b) {
-      const dr = a.r - b.r;
-      const dg = a.g - b.g;
-      const db = a.b - b.b;
+      if (!rgb) return null;
 
-      return Math.sqrt(dr * dr + dg * dg + db * db);
-    },
+      const analogous = this.analogous(rgb);
 
-    // Detect whether a scene has changed significantly
-    hasSceneChanged(previous, current, threshold = 45) {
-      if (!previous || !current) return true;
+      return {
+        primary: rgb,
+        complementary: this.complementary(rgb),
+        analogousPrevious: analogous.previous,
+        analogousNext: analogous.next,
+        lighter: this.lighten(rgb, 35),
+        darker: this.darken(rgb, 35),
+      };
+    }
+  }
 
-      return this.distance(previous, current) > threshold;
-    },
-
-    // Convert color to HEX
-    toHex(color) {
-      return utils.rgbToHex(color);
-    },
-
-    // Convert color to CSS RGB
-    toCSS(color) {
-      return utils.rgbToString(color);
-    },
-  };
-
-  AF.colorEngine = colorEngine;
+  AF.ColorEngine = ColorEngine;
+  AF.colorEngine = AF.colorEngine || new ColorEngine();
 })();

@@ -1,56 +1,76 @@
-/* ==========================================
-   YOUTUBE AMBIENT FLOW
-   Playback-Aware Ambient Glow
-========================================== */
+/**
+ * YouTube Ambient Flow
+ * Ambient Glow Engine
+ *
+ * Creates a soft video-responsive ambient glow.
+ */
 
 (() => {
   "use strict";
 
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
+  const ELEMENT_ID = "ambient-flow-glow";
+
   class AmbientGlow {
     constructor() {
-      this.elementId = "ambient-flow-glow";
-
       this.element = null;
 
-      this.enabled = true;
-      this.visible = false;
+      this.currentColor = null;
+      this.previousColor = null;
 
-      this.currentColor = "#243b55";
+      this.intensity = 0.65;
+      this.transitionDuration = 500;
 
-      this.intensity = 0.45;
-      this.blur = 54;
+      this.isVisible = false;
+      this.isDestroyed = false;
 
-      this.transitionMs = 500;
+      this.settings = {
+        enabled: true,
+        blur: 100,
+        spread: 35,
+        opacity: 0.65,
+      };
 
-      this.lastPosition = null;
+      this.reducedMotion =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ||
+        false;
+
+      this.ensureElement();
     }
 
-    /* ======================================
-       ELEMENT MANAGEMENT
-    ====================================== */
+    ensureElement() {
+      if (this.isDestroyed) return null;
 
-    create() {
-      if (this.element && this.element.isConnected) {
+      if (this.element?.isConnected) {
         return this.element;
       }
 
-      let element = document.getElementById(this.elementId);
+      let element = document.getElementById(ELEMENT_ID);
 
       if (!element) {
         element = document.createElement("div");
 
-        element.id = this.elementId;
-
+        element.id = ELEMENT_ID;
         element.setAttribute("aria-hidden", "true");
+        element.setAttribute("role", "presentation");
 
-        element.setAttribute("data-af-element", "ambient-glow");
+        const parent = document.body || document.documentElement;
 
-        (document.body || document.documentElement).appendChild(element);
+        parent.appendChild(element);
       }
 
       this.element = element;
+
+      this.applyBaseStyles();
+
+      return element;
+    }
+
+    applyBaseStyles() {
+      if (!this.element) return;
+
+      const element = this.element;
 
       Object.assign(element.style, {
         position: "fixed",
@@ -58,210 +78,270 @@
         width: "100%",
         height: "100%",
         pointerEvents: "none",
+        userSelect: "none",
         zIndex: "0",
         opacity: "0",
         visibility: "hidden",
-        backgroundRepeat: "no-repeat",
-        mixBlendMode: "screen",
-        willChange: "opacity, background",
+        background: "none",
+        transition: this.reducedMotion
+          ? "none"
+          : `opacity ${this.transitionDuration}ms ease, background ${this.transitionDuration}ms ease`,
         contain: "strict",
       });
-
-      return element;
     }
 
-    /* ======================================
-       COLOR AND SETTINGS
-    ====================================== */
-
-    update(color, settings = {}) {
-      if (!this.enabled || !color) {
-        return false;
+    normalizeColor(color) {
+      if (typeof color === "string") {
+        return this.hexToRgb(color);
       }
-
-      if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) {
-        return false;
-      }
-
-      this.currentColor = color;
-
-      const intensity = Number(settings.intensity ?? 45);
-
-      const blur = Number(settings.blur ?? 54);
-
-      const transition = Number(settings.transitionMs ?? 500);
-
-      this.intensity = Math.max(0, Math.min(100, intensity)) / 100;
-
-      this.blur = Math.max(0, Math.min(100, blur));
-
-      this.transitionMs = Math.max(0, Math.min(5000, transition));
-
-      const element = this.create();
-
-      const glowOpacity = this.intensity * 0.75;
-
-      element.style.setProperty(
-        "transition",
-        `opacity ${this.transitionMs}ms ease, background ${this.transitionMs}ms ease`,
-      );
-
-      element.style.setProperty("filter", `blur(${this.blur}px)`);
-
-      element.style.setProperty(
-        "background",
-        `
-          radial-gradient(
-            ellipse at 50% 45%,
-            ${color} ${Math.max(5, glowOpacity * 25)}%,
-            transparent 75%
-          )
-        `,
-      );
-
-      return true;
-    }
-
-    /* ======================================
-       POSITIONING
-    ====================================== */
-
-    updatePosition(player) {
-      if (!player || !player.isConnected || !this.element) {
-        return;
-      }
-
-      const rect = player.getBoundingClientRect();
-
-      if (!rect.width || !rect.height) return;
-
-      const centerX = rect.left + rect.width / 2;
-
-      const centerY = rect.top + rect.height / 2;
-
-      const position = {
-        x: Math.round(centerX),
-        y: Math.round(centerY),
-      };
 
       if (
-        this.lastPosition?.x === position.x &&
-        this.lastPosition?.y === position.y
+        !color ||
+        !Number.isFinite(Number(color.r)) ||
+        !Number.isFinite(Number(color.g)) ||
+        !Number.isFinite(Number(color.b))
       ) {
-        return;
+        return null;
       }
 
-      this.lastPosition = position;
-
-      this.element.style.backgroundPosition = `${position.x}px ${position.y}px`;
+      return {
+        r: this.clamp(Number(color.r)),
+        g: this.clamp(Number(color.g)),
+        b: this.clamp(Number(color.b)),
+      };
     }
 
-    /* ======================================
-       SHOW AND HIDE
-    ====================================== */
+    clamp(value) {
+      return Math.max(0, Math.min(255, value));
+    }
 
-    show() {
-      if (!this.enabled) return false;
+    hexToRgb(hex) {
+      if (typeof hex !== "string") return null;
 
-      const element = this.create();
+      let value = hex.trim().replace(/^#/, "");
 
-      element.style.visibility = "visible";
-      element.style.opacity = String(Math.min(0.75, this.intensity * 0.75));
+      if (/^[a-f\d]{3}$/i.test(value)) {
+        value = value
+          .split("")
+          .map((character) => character + character)
+          .join("");
+      }
 
-      this.visible = true;
+      if (!/^[a-f\d]{6}$/i.test(value)) {
+        return null;
+      }
+
+      return {
+        r: parseInt(value.slice(0, 2), 16),
+        g: parseInt(value.slice(2, 4), 16),
+        b: parseInt(value.slice(4, 6), 16),
+      };
+    }
+
+    rgba(color, alpha) {
+      return `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)}, ${alpha})`;
+    }
+
+    createGlow(color) {
+      const rgb = this.normalizeColor(color);
+
+      if (!rgb) return null;
+
+      const opacity = Math.max(
+        0,
+        Math.min(1, this.intensity * this.settings.opacity),
+      );
+
+      const blur = Math.max(20, Math.min(250, this.settings.blur));
+
+      const spread = Math.max(0, Math.min(100, this.settings.spread));
+
+      const secondary = {
+        r: this.clamp(rgb.r * 0.65),
+        g: this.clamp(rgb.g * 0.65),
+        b: this.clamp(rgb.b * 0.65),
+      };
+
+      return `
+        radial-gradient(
+          ellipse at 50% 0%,
+          ${this.rgba(rgb, opacity * 0.3)} 0%,
+          ${this.rgba(rgb, opacity * 0.16)} ${spread}%,
+          transparent ${Math.min(95, spread + blur / 4)}%
+        ),
+        radial-gradient(
+          ellipse at 0% 50%,
+          ${this.rgba(secondary, opacity * 0.12)} 0%,
+          transparent 65%
+        ),
+        radial-gradient(
+          ellipse at 100% 50%,
+          ${this.rgba(rgb, opacity * 0.1)} 0%,
+          transparent 65%
+        )
+      `;
+    }
+
+    update(color) {
+      return this.setColor(color);
+    }
+
+    setColor(color) {
+      if (this.isDestroyed || !this.settings.enabled) {
+        return false;
+      }
+
+      const rgb = this.normalizeColor(color);
+
+      if (!rgb) return false;
+
+      const element = this.ensureElement();
+
+      if (!element) return false;
+
+      const background = this.createGlow(rgb);
+
+      if (!background) return false;
+
+      this.previousColor = this.currentColor;
+      this.currentColor = rgb;
+
+      element.style.background = background;
+
+      if (this.isVisible) {
+        element.style.opacity = String(Math.min(1, this.intensity));
+      }
 
       return true;
-    }
-
-    /**
-     * Hide immediately when playback stops.
-     * No fade-out is used because the user wants
-     * the original YouTube appearance immediately.
-     */
-    hide() {
-      if (!this.element) {
-        this.visible = false;
-        return;
-      }
-
-      this.element.style.transition = "none";
-      this.element.style.opacity = "0";
-      this.element.style.visibility = "hidden";
-
-      this.visible = false;
-      this.lastPosition = null;
-    }
-
-    /* ======================================
-       CONFIGURATION
-    ====================================== */
-
-    setEnabled(enabled) {
-      this.enabled = Boolean(enabled);
-
-      if (!this.enabled) {
-        this.hide();
-      }
     }
 
     setIntensity(value) {
       const number = Number(value);
 
-      if (!Number.isFinite(number)) return;
+      if (!Number.isFinite(number)) return false;
 
-      this.intensity = Math.max(0, Math.min(100, number)) / 100;
+      this.intensity = Math.max(0, Math.min(1, number));
 
-      if (this.visible && this.element) {
-        this.element.style.opacity = String(
-          Math.min(0.75, this.intensity * 0.75),
-        );
+      if (this.currentColor) {
+        this.setColor(this.currentColor);
       }
+
+      if (this.element && this.isVisible) {
+        this.element.style.opacity = String(this.intensity);
+      }
+
+      return true;
     }
 
-    setBlur(value) {
+    setTransitionDuration(value) {
       const number = Number(value);
 
-      if (!Number.isFinite(number)) return;
+      if (!Number.isFinite(number)) return false;
 
-      this.blur = Math.max(0, Math.min(100, number));
+      this.transitionDuration = Math.max(0, Math.min(3000, number));
 
       if (this.element) {
-        this.element.style.filter = `blur(${this.blur}px)`;
+        this.element.style.transition = this.reducedMotion
+          ? "none"
+          : `opacity ${this.transitionDuration}ms ease, background ${this.transitionDuration}ms ease`;
       }
+
+      return true;
     }
 
-    /* ======================================
-       STATUS
-    ====================================== */
+    setOptions(options = {}) {
+      if (!options || typeof options !== "object") {
+        return false;
+      }
+
+      this.settings = {
+        ...this.settings,
+        ...options,
+      };
+
+      if (options.intensity !== undefined) {
+        this.setIntensity(options.intensity);
+      }
+
+      if (options.transitionDuration !== undefined) {
+        this.setTransitionDuration(options.transitionDuration);
+      }
+
+      if (options.enabled === false) {
+        this.hide();
+      }
+
+      if (this.currentColor && this.settings.enabled) {
+        this.setColor(this.currentColor);
+      }
+
+      return true;
+    }
+
+    show() {
+      if (this.isDestroyed || !this.settings.enabled || !this.currentColor) {
+        return false;
+      }
+
+      const element = this.ensureElement();
+
+      if (!element) return false;
+
+      element.style.visibility = "visible";
+      element.style.opacity = String(this.intensity);
+
+      this.isVisible = true;
+
+      return true;
+    }
+
+    hide() {
+      if (!this.element) {
+        this.isVisible = false;
+        return;
+      }
+
+      this.element.style.opacity = "0";
+      this.element.style.visibility = "hidden";
+      this.element.style.background = "none";
+
+      this.isVisible = false;
+    }
+
+    reset() {
+      this.hide();
+
+      this.currentColor = null;
+      this.previousColor = null;
+
+      if (this.element) {
+        this.element.style.background = "none";
+      }
+    }
 
     getStatus() {
       return {
-        enabled: this.enabled,
-        visible: this.visible,
-        color: this.currentColor,
+        visible: this.isVisible,
+        enabled: this.settings.enabled,
         intensity: this.intensity,
-        blur: this.blur,
+        color: this.currentColor,
+        transitionDuration: this.transitionDuration,
       };
     }
 
-    /* ======================================
-       CLEANUP
-    ====================================== */
-
     destroy() {
-      this.hide();
+      if (this.isDestroyed) return;
 
-      if (this.element?.isConnected) {
-        this.element.remove();
-      }
+      this.reset();
+
+      this.element?.remove();
 
       this.element = null;
-      this.visible = false;
-      this.enabled = false;
-      this.lastPosition = null;
+      this.isDestroyed = true;
     }
   }
 
   AF.AmbientGlow = AmbientGlow;
-  AF.ambientGlow = new AmbientGlow();
+
+  AF.ambientGlow = AF.ambientGlow || new AmbientGlow();
 })();

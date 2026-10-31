@@ -1,111 +1,354 @@
+/**
+ * YouTube Ambient Flow
+ * Readability Engine
+ *
+ * Ensures readable text colors against dynamic backgrounds.
+ * Uses WCAG relative luminance and contrast calculations.
+ */
+
 (() => {
   "use strict";
 
-  const AF = window.AmbientFlow;
-  const utils = AF.utils;
+  const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
   class ReadabilityEngine {
     constructor() {
-      this.enabled = true;
+      this.colorEngine = AF.colorEngine || null;
+
       this.minimumContrast = 4.5;
-      this.lastPalette = null;
+      this.largeTextContrast = 3;
+      this.enhancedContrast = 7;
+
+      this.originalVariables = new Map();
+
+      this.isActive = false;
+      this.isDestroyed = false;
     }
 
-    // Calculate WCAG contrast ratio
-    contrastRatio(color1, color2) {
-      const luminance1 = utils.luminance(utils.hexToRgb(color1));
+    normalize(color) {
+      if (this.colorEngine?.normalize) {
+        return this.colorEngine.normalize(color);
+      }
 
-      const luminance2 = utils.luminance(utils.hexToRgb(color2));
+      if (typeof color === "string") {
+        return this.hexToRgb(color);
+      }
 
-      const lighter = Math.max(luminance1, luminance2);
+      if (
+        !color ||
+        !Number.isFinite(Number(color.r)) ||
+        !Number.isFinite(Number(color.g)) ||
+        !Number.isFinite(Number(color.b))
+      ) {
+        return null;
+      }
 
-      const darker = Math.min(luminance1, luminance2);
+      return {
+        r: this.clamp(color.r),
+        g: this.clamp(color.g),
+        b: this.clamp(color.b),
+      };
+    }
+
+    clamp(value) {
+      return Math.max(0, Math.min(255, Number(value)));
+    }
+
+    hexToRgb(hex) {
+      if (typeof hex !== "string") return null;
+
+      let value = hex.trim().replace(/^#/, "");
+
+      if (/^[a-f\d]{3}$/i.test(value)) {
+        value = value
+          .split("")
+          .map((character) => character + character)
+          .join("");
+      }
+
+      if (!/^[a-f\d]{6}$/i.test(value)) return null;
+
+      return {
+        r: parseInt(value.slice(0, 2), 16),
+        g: parseInt(value.slice(2, 4), 16),
+        b: parseInt(value.slice(4, 6), 16),
+      };
+    }
+
+    toHex(color) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      const channel = (value) =>
+        Math.round(value).toString(16).padStart(2, "0");
+
+      return `#${channel(rgb.r)}${channel(rgb.g)}${channel(rgb.b)}`;
+    }
+
+    relativeLuminance(color) {
+      const rgb = this.normalize(color);
+
+      if (!rgb) return null;
+
+      const linearize = (value) => {
+        const channel = value / 255;
+
+        return channel <= 0.04045
+          ? channel / 12.92
+          : Math.pow((channel + 0.055) / 1.055, 2.4);
+      };
+
+      return (
+        0.2126 * linearize(rgb.r) +
+        0.7152 * linearize(rgb.g) +
+        0.0722 * linearize(rgb.b)
+      );
+    }
+
+    contrastRatio(foreground, background) {
+      const foregroundLuminance = this.relativeLuminance(foreground);
+
+      const backgroundLuminance = this.relativeLuminance(background);
+
+      if (foregroundLuminance === null || backgroundLuminance === null) {
+        return null;
+      }
+
+      const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+
+      const darker = Math.min(foregroundLuminance, backgroundLuminance);
 
       return (lighter + 0.05) / (darker + 0.05);
     }
 
-    // Select the most readable text color
-    getReadableText(background) {
-      const white = "#FFFFFF";
-      const black = "#000000";
+    getBestTextColor(background, options = {}) {
+      const bg = this.normalize(background);
 
-      const whiteContrast = this.contrastRatio(white, background);
+      if (!bg) return "#ffffff";
 
-      const blackContrast = this.contrastRatio(black, background);
+      const minimum = options.minimumContrast || this.minimumContrast;
 
-      return whiteContrast >= blackContrast ? white : black;
-    }
+      const black = { r: 0, g: 0, b: 0 };
+      const white = { r: 255, g: 255, b: 255 };
 
-    // Check whether text meets minimum contrast
-    isReadable(text, background) {
-      return this.contrastRatio(text, background) >= this.minimumContrast;
-    }
+      const blackRatio = this.contrastRatio(black, bg);
+      const whiteRatio = this.contrastRatio(white, bg);
 
-    // Adjust a palette to improve readability
-    optimizePalette(palette) {
-      if (!this.enabled || !palette) {
-        return palette;
+      const best = blackRatio >= whiteRatio ? black : white;
+
+      const bestRatio = Math.max(blackRatio, whiteRatio);
+
+      if (bestRatio >= minimum) {
+        return this.toHex(best);
       }
 
-      const optimized = { ...palette };
+      return this.toHex(best);
+    }
 
-      optimized.text = this.getReadableText(optimized.background);
+    ensureContrast(foreground, background, minimum = this.minimumContrast) {
+      const fg = this.normalize(foreground);
+      const bg = this.normalize(background);
 
-      optimized.mutedText =
-        optimized.text === "#FFFFFF" ? "#C5C5C5" : "#555555";
+      if (!fg || !bg) return null;
 
-      // Keep surfaces visually distinct from the background
-      const backgroundRgb = utils.hexToRgb(optimized.background);
+      const currentRatio = this.contrastRatio(fg, bg);
 
-      const surfaceRgb = utils.hexToRgb(optimized.surface);
-
-      if (colorsDistance(backgroundRgb, surfaceRgb) < 10) {
-        const adjustment = optimized.text === "#FFFFFF" ? 8 : -8;
-
-        const adjusted = AF.colorEngine.adjustBrightness(
-          surfaceRgb,
-          adjustment,
-        );
-
-        optimized.surface = utils.rgbToHex(adjusted);
+      if (currentRatio >= minimum) {
+        return {
+          color: this.toHex(fg),
+          ratio: currentRatio,
+          adjusted: false,
+        };
       }
 
-      this.lastPalette = optimized;
+      const black = { r: 0, g: 0, b: 0 };
+      const white = { r: 255, g: 255, b: 255 };
 
-      return optimized;
-    }
+      const blackRatio = this.contrastRatio(black, bg);
+      const whiteRatio = this.contrastRatio(white, bg);
 
-    // Update minimum contrast requirement
-    setMinimumContrast(value) {
-      this.minimumContrast = Math.max(3, Math.min(7, Number(value) || 4.5));
-    }
+      const target = blackRatio >= whiteRatio ? black : white;
 
-    // Enable or disable readability optimization
-    setEnabled(enabled) {
-      this.enabled = Boolean(enabled);
-    }
+      const targetRatio = Math.max(blackRatio, whiteRatio);
 
-    // Return readability diagnostics
-    getStatus() {
+      if (targetRatio < minimum) {
+        return {
+          color: this.toHex(target),
+          ratio: targetRatio,
+          adjusted: true,
+          meetsRequirement: false,
+        };
+      }
+
+      let low = 0;
+      let high = 1;
+      let best = target;
+
+      for (let i = 0; i < 24; i++) {
+        const middle = (low + high) / 2;
+
+        const candidate = {
+          r: fg.r + (target.r - fg.r) * middle,
+          g: fg.g + (target.g - fg.g) * middle,
+          b: fg.b + (target.b - fg.b) * middle,
+        };
+
+        const ratio = this.contrastRatio(candidate, bg);
+
+        if (ratio >= minimum) {
+          best = candidate;
+          high = middle;
+        } else {
+          low = middle;
+        }
+      }
+
       return {
-        enabled: this.enabled,
+        color: this.toHex(best),
+        ratio: this.contrastRatio(best, bg),
+        adjusted: true,
+        meetsRequirement: true,
+      };
+    }
+
+    getReadablePalette(palette = {}) {
+      const background = this.normalize(palette.background || "#101010");
+
+      const surface = this.normalize(palette.surface || "#202020");
+
+      if (!background || !surface) return null;
+
+      const text = this.getBestTextColor(background);
+
+      const surfaceText = this.getBestTextColor(surface);
+
+      const mutedResult = this.ensureContrast(
+        palette.muted || "#aaaaaa",
+        background,
+        3,
+      );
+
+      const borderResult = this.ensureContrast(
+        palette.border || "#444444",
+        background,
+        1.5,
+      );
+
+      return {
+        ...palette,
+        text,
+        surfaceText,
+        muted: mutedResult?.color || "#aaaaaa",
+        border: borderResult?.color || "#444444",
+        contrast: {
+          text: this.contrastRatio(text, background),
+          surfaceText: this.contrastRatio(surfaceText, surface),
+          muted: this.contrastRatio(mutedResult?.color, background),
+        },
+      };
+    }
+
+    captureOriginalVariables() {
+      if (!document.documentElement) return;
+
+      const root = document.documentElement;
+
+      ["--af-text", "--af-muted", "--af-surface-text", "--af-border"].forEach(
+        (variable) => {
+          if (!this.originalVariables.has(variable)) {
+            this.originalVariables.set(
+              variable,
+              root.style.getPropertyValue(variable),
+            );
+          }
+        },
+      );
+    }
+
+    apply(palette = {}) {
+      if (this.isDestroyed || !palette) return false;
+
+      const readablePalette = this.getReadablePalette(palette);
+
+      if (!readablePalette) return false;
+
+      this.captureOriginalVariables();
+
+      const root = document.documentElement;
+
+      root.style.setProperty("--af-text", readablePalette.text);
+
+      root.style.setProperty("--af-muted", readablePalette.muted);
+
+      root.style.setProperty("--af-surface-text", readablePalette.surfaceText);
+
+      root.style.setProperty("--af-border", readablePalette.border);
+
+      this.isActive = true;
+
+      return readablePalette;
+    }
+
+    setMinimumContrast(value) {
+      const number = Number(value);
+
+      if (!Number.isFinite(number)) return false;
+
+      this.minimumContrast = Math.max(1, Math.min(21, number));
+
+      return true;
+    }
+
+    getReport(palette = {}) {
+      const readable = this.getReadablePalette(palette);
+
+      if (!readable) return null;
+
+      return {
+        palette: readable,
+        contrast: readable.contrast,
         minimumContrast: this.minimumContrast,
-        lastPalette: this.lastPalette,
+        wcagAA: readable.contrast.text >= 4.5,
+        wcagAAA: readable.contrast.text >= 7,
       };
     }
 
     reset() {
-      this.lastPalette = null;
+      if (!document.documentElement) return;
+
+      const root = document.documentElement;
+
+      this.originalVariables.forEach((value, variable) => {
+        if (value) {
+          root.style.setProperty(variable, value);
+        } else {
+          root.style.removeProperty(variable);
+        }
+      });
+
+      this.originalVariables.clear();
+      this.isActive = false;
+    }
+
+    getStatus() {
+      return {
+        active: this.isActive,
+        minimumContrast: this.minimumContrast,
+        destroyed: this.isDestroyed,
+      };
+    }
+
+    destroy() {
+      if (this.isDestroyed) return;
+
+      this.reset();
+
+      this.isDestroyed = true;
     }
   }
 
-  // Calculate RGB distance
-  function colorsDistance(a, b) {
-    return Math.sqrt(
-      Math.pow(a.r - b.r, 2) + Math.pow(a.g - b.g, 2) + Math.pow(a.b - b.b, 2),
-    );
-  }
-
   AF.ReadabilityEngine = ReadabilityEngine;
-  AF.readabilityEngine = new ReadabilityEngine();
+
+  AF.readabilityEngine = AF.readabilityEngine || new ReadabilityEngine();
 })();

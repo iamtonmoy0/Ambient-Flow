@@ -1,491 +1,560 @@
-"use strict";
+/**
+ * YouTube Ambient Flow
+ * Options Page Controller
+ */
 
-document.addEventListener("DOMContentLoaded", () => {
-  const $ = (id) => document.getElementById(id);
+(() => {
+  "use strict";
 
-  const DEFAULTS = {
+  const DEFAULT_SETTINGS = {
     enabled: true,
-    autoStart: true,
-    mode: "cinematic",
-    colorSource: "dominant",
-    backgroundStyle: "gradient",
-    intensity: 68,
-    saturation: 72,
-    blur: 54,
-    transitionMs: 900,
-    sampleInterval: 1000,
-    performanceMode: "balanced",
-    adaptivePerformance: true,
-    sceneDetection: true,
     ambientGlow: true,
-    readability: true,
-    focusMode: false,
-    shortsSupport: true,
-    rememberChannelThemes: true,
-    reducedMotion: false,
-    frozen: false,
-    frozenColor: "#243b55",
-    customColor: "#243b55",
-    lastColor: "#243b55",
-    channelProfiles: {},
+    focusModeEnabled: false,
+
+    performanceMode: "balanced",
+    samplingInterval: 700,
+    sceneThreshold: 18,
+
+    glowIntensity: 65,
+    transitionDuration: 800,
+
+    hideSidebar: false,
+    hideComments: false,
+    hideRecommendations: false,
+    hideChat: false,
+    hideHeader: false,
+    hideShortsControls: false,
+
+    freezeBackground: false,
+    customColor: "#202020",
   };
 
-  const SETTINGS_KEYS = Object.keys(DEFAULTS);
-
-  const RANGE_CONTROLS = {
-    intensity: {
-      output: "intensityValue",
-      suffix: "%",
-    },
-    saturation: {
-      output: "saturationValue",
-      suffix: "%",
-    },
-    blur: {
-      output: "blurValue",
-      suffix: "%",
-    },
-    transitionMs: {
-      output: "transitionValue",
-      suffix: " ms",
-    },
+  const MESSAGE_TYPES = {
+    GET_SETTINGS: "GET_SETTINGS",
+    UPDATE_SETTINGS: "UPDATE_SETTINGS",
+    RESET_THEME: "RESET_THEME",
   };
 
-  const SELECT_CONTROLS = [
-    "mode",
-    "colorSource",
-    "backgroundStyle",
-    "performanceMode",
-  ];
+  const elements = {};
 
-  const CHECKBOX_CONTROLS = [
+  let settings = { ...DEFAULT_SETTINGS };
+  let isInitialized = false;
+  let saveTimeout = null;
+
+  const BOOLEAN_KEYS = [
     "enabled",
-    "autoStart",
-    "adaptivePerformance",
-    "sceneDetection",
     "ambientGlow",
-    "readability",
-    "focusMode",
-    "shortsSupport",
-    "rememberChannelThemes",
-    "reducedMotion",
+    "focusModeEnabled",
+    "hideSidebar",
+    "hideComments",
+    "hideRecommendations",
+    "hideChat",
+    "hideHeader",
+    "hideShortsControls",
+    "freezeBackground",
   ];
 
-  let currentSettings = { ...DEFAULTS };
-  let toastTimeout = null;
+  const NUMBER_RANGES = {
+    samplingInterval: [350, 4000],
+    sceneThreshold: [1, 100],
+    glowIntensity: [0, 100],
+    transitionDuration: [0, 5000],
+  };
 
-  const saveButton = $("saveButton");
-  const exportButton = $("exportButton");
-  const importButton = $("importButton");
-  const importFile = $("importFile");
-  const resetButton = $("resetButton");
-  const toast = $("toast");
-
-  // Show notification
-  function showToast(message, duration = 2500) {
-    toast.textContent = message;
-    toast.classList.add("show");
-
-    clearTimeout(toastTimeout);
-
-    toastTimeout = setTimeout(() => {
-      toast.classList.remove("show");
-    }, duration);
+  function getElement(id) {
+    return document.getElementById(id);
   }
 
-  // Read settings from Chrome storage
-  async function loadSettings() {
-    const stored = await chrome.storage.local.get(null);
+  function cacheElements() {
+    const ids = [
+      "enabled",
+      "ambientGlow",
+      "focusModeEnabled",
+      "performanceMode",
+      "samplingInterval",
+      "samplingIntervalValue",
+      "sceneThreshold",
+      "sceneThresholdValue",
+      "glowIntensity",
+      "glowIntensityValue",
+      "transitionDuration",
+      "transitionDurationValue",
+      "hideSidebar",
+      "hideComments",
+      "hideRecommendations",
+      "hideChat",
+      "hideHeader",
+      "hideShortsControls",
+      "freezeBackground",
+      "customColor",
+      "saveButton",
+      "resetButton",
+      "statusMessage",
+      "loadingIndicator",
+      "restoreDefaultsButton",
+    ];
 
-    currentSettings = {
-      ...DEFAULTS,
-      ...stored,
-    };
-
-    renderSettings();
-  }
-
-  // Render settings in the interface
-  function renderSettings() {
-    for (const key of CHECKBOX_CONTROLS) {
-      const element = $(key);
-
-      if (element) {
-        element.checked = Boolean(currentSettings[key]);
-      }
-    }
-
-    for (const key of SELECT_CONTROLS) {
-      const element = $(key);
-
-      if (element) {
-        element.value = currentSettings[key];
-      }
-    }
-
-    for (const [key, config] of Object.entries(RANGE_CONTROLS)) {
-      const element = $(key);
-      const output = $(config.output);
-
-      if (element) {
-        element.value = currentSettings[key];
-      }
-
-      if (output) {
-        output.textContent = `${currentSettings[key]}${config.suffix}`;
-      }
-    }
-  }
-
-  // Collect current form values
-  function collectSettings() {
-    const values = {};
-
-    for (const key of CHECKBOX_CONTROLS) {
-      const element = $(key);
-
-      if (element) {
-        values[key] = element.checked;
-      }
-    }
-
-    for (const key of SELECT_CONTROLS) {
-      const element = $(key);
-
-      if (element) {
-        values[key] = element.value;
-      }
-    }
-
-    for (const key of Object.keys(RANGE_CONTROLS)) {
-      const element = $(key);
-
-      if (element) {
-        values[key] = Number(element.value);
-      }
-    }
-
-    return values;
-  }
-
-  // Validate configuration before saving
-  function validateSettings(settings) {
-    const allowedModes = ["cinematic", "minimal", "vibrant", "relax"];
-
-    const allowedColorSources = ["dominant", "average"];
-
-    const allowedBackgrounds = ["gradient", "radial", "solid", "linear"];
-
-    const allowedPerformance = ["high", "balanced", "battery"];
-
-    if (!allowedModes.includes(settings.mode)) {
-      throw new Error("Invalid visual mode.");
-    }
-
-    if (!allowedColorSources.includes(settings.colorSource)) {
-      throw new Error("Invalid color source.");
-    }
-
-    if (!allowedBackgrounds.includes(settings.backgroundStyle)) {
-      throw new Error("Invalid background style.");
-    }
-
-    if (!allowedPerformance.includes(settings.performanceMode)) {
-      throw new Error("Invalid performance profile.");
-    }
-
-    const ranges = {
-      intensity: [0, 100],
-      saturation: [0, 100],
-      blur: [0, 100],
-      transitionMs: [100, 2500],
-    };
-
-    for (const [key, [min, max]] of Object.entries(ranges)) {
-      const value = Number(settings[key]);
-
-      if (!Number.isFinite(value) || value < min || value > max) {
-        throw new Error(`Invalid ${key} value.`);
-      }
-    }
-
-    return true;
-  }
-
-  // Save settings
-  async function saveSettings(values) {
-    const updated = {
-      ...currentSettings,
-      ...values,
-    };
-
-    validateSettings(updated);
-
-    // Save only known settings.
-    const safeSettings = {};
-
-    for (const key of SETTINGS_KEYS) {
-      if (key in updated) {
-        safeSettings[key] = updated[key];
-      }
-    }
-
-    await chrome.storage.local.set(safeSettings);
-
-    currentSettings = {
-      ...DEFAULTS,
-      ...safeSettings,
-    };
-
-    renderSettings();
-
-    return true;
-  }
-
-  // Save button
-  saveButton.addEventListener("click", async () => {
-    try {
-      saveButton.disabled = true;
-      saveButton.textContent = "Saving...";
-
-      const values = collectSettings();
-
-      await saveSettings(values);
-
-      showToast("Settings saved successfully.");
-    } catch (error) {
-      console.error("[AmbientFlow] Save error:", error);
-      showToast(error.message || "Could not save settings.");
-    } finally {
-      saveButton.disabled = false;
-      saveButton.textContent = "Save Changes";
-    }
-  });
-
-  // Update slider labels immediately
-  for (const [key, config] of Object.entries(RANGE_CONTROLS)) {
-    const element = $(key);
-    const output = $(config.output);
-
-    element.addEventListener("input", () => {
-      output.textContent = `${element.value}${config.suffix}`;
+    ids.forEach((id) => {
+      elements[id] = getElement(id);
     });
   }
 
-  // Export settings as JSON
-  exportButton.addEventListener("click", async () => {
-    try {
-      const stored = await chrome.storage.local.get(null);
-
-      const exportData = {
-        application: "YouTube Ambient Flow",
-        version: chrome.runtime.getManifest().version,
-        exportedAt: new Date().toISOString(),
-        settings: {},
-      };
-
-      for (const key of SETTINGS_KEYS) {
-        if (key in stored) {
-          exportData.settings[key] = stored[key];
-        } else {
-          exportData.settings[key] = DEFAULTS[key];
-        }
+  function sendMessage(type, payload = {}) {
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+        reject(new Error("Extension runtime unavailable"));
+        return;
       }
 
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-        type: "application/json",
+      chrome.runtime.sendMessage(
+        {
+          type,
+          ...payload,
+        },
+        (response) => {
+          const error = chrome.runtime.lastError;
+
+          if (error) {
+            reject(new Error(error.message));
+            return;
+          }
+
+          resolve(response);
+        },
+      );
+    });
+  }
+
+  function showStatus(message, type = "success") {
+    const element = elements.statusMessage;
+
+    if (!element) return;
+
+    element.textContent = message;
+    element.dataset.type = type;
+    element.hidden = false;
+  }
+
+  function hideStatus() {
+    if (!elements.statusMessage) return;
+
+    elements.statusMessage.hidden = true;
+    elements.statusMessage.textContent = "";
+  }
+
+  function setLoading(loading) {
+    if (elements.loadingIndicator) {
+      elements.loadingIndicator.hidden = !loading;
+    }
+
+    document.body.classList.toggle("is-loading", Boolean(loading));
+  }
+
+  function normalizeSettings(input = {}) {
+    const result = {
+      ...DEFAULT_SETTINGS,
+      ...input,
+    };
+
+    BOOLEAN_KEYS.forEach((key) => {
+      result[key] = Boolean(result[key]);
+    });
+
+    Object.entries(NUMBER_RANGES).forEach(([key, range]) => {
+      const value = Number(result[key]);
+
+      result[key] = Number.isFinite(value)
+        ? Math.max(range[0], Math.min(range[1], value))
+        : DEFAULT_SETTINGS[key];
+    });
+
+    if (!["battery", "balanced", "quality"].includes(result.performanceMode)) {
+      result.performanceMode = "balanced";
+    }
+
+    if (
+      typeof result.customColor !== "string" ||
+      !CSS.supports("color", result.customColor)
+    ) {
+      result.customColor = DEFAULT_SETTINGS.customColor;
+    }
+
+    return result;
+  }
+
+  async function loadSettings() {
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.GET_SETTINGS);
+
+      const source = response?.settings || response || {};
+
+      settings = normalizeSettings(source);
+
+      renderSettings();
+
+      return settings;
+    } catch (error) {
+      console.error("[AmbientFlow] Settings load failed:", error);
+
+      showStatus(
+        "Could not load settings. Default values are displayed.",
+        "error",
+      );
+
+      settings = normalizeSettings();
+
+      renderSettings();
+
+      return settings;
+    }
+  }
+
+  function setCheckbox(id, value) {
+    const element = elements[id];
+
+    if (!element) return;
+
+    element.checked = Boolean(value);
+  }
+
+  function setInputValue(id, value) {
+    const element = elements[id];
+
+    if (!element) return;
+
+    element.value = String(value);
+  }
+
+  function renderRangeValue(id, value, suffix = "") {
+    setInputValue(id, value);
+
+    const output = elements[`${id}Value`];
+
+    if (output) {
+      output.textContent = `${value}${suffix}`;
+    }
+  }
+
+  function renderSettings() {
+    BOOLEAN_KEYS.forEach((key) => {
+      setCheckbox(key, settings[key]);
+    });
+
+    setInputValue("performanceMode", settings.performanceMode);
+
+    renderRangeValue("samplingInterval", settings.samplingInterval, " ms");
+
+    renderRangeValue("sceneThreshold", settings.sceneThreshold);
+
+    renderRangeValue("glowIntensity", settings.glowIntensity, "%");
+
+    renderRangeValue("transitionDuration", settings.transitionDuration, " ms");
+
+    setInputValue("customColor", settings.customColor);
+  }
+
+  function getControlValue(key, element) {
+    if (BOOLEAN_KEYS.includes(key)) {
+      return Boolean(element.checked);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(NUMBER_RANGES, key)) {
+      return Number(element.value);
+    }
+
+    return element.value;
+  }
+
+  function validateSetting(key, value) {
+    if (BOOLEAN_KEYS.includes(key)) {
+      return typeof value === "boolean";
+    }
+
+    if (Object.prototype.hasOwnProperty.call(NUMBER_RANGES, key)) {
+      const [minimum, maximum] = NUMBER_RANGES[key];
+
+      return Number.isFinite(value) && value >= minimum && value <= maximum;
+    }
+
+    if (key === "performanceMode") {
+      return ["battery", "balanced", "quality"].includes(value);
+    }
+
+    if (key === "customColor") {
+      return typeof value === "string" && CSS.supports("color", value);
+    }
+
+    return false;
+  }
+
+  async function saveSettings(updates, options = {}) {
+    hideStatus();
+
+    const validatedUpdates = {};
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (!validateSetting(key, value)) {
+        showStatus(`Invalid value for ${key}.`, "error");
+
+        return false;
+      }
+
+      validatedUpdates[key] = value;
+    }
+
+    const previousSettings = { ...settings };
+
+    settings = normalizeSettings({
+      ...settings,
+      ...validatedUpdates,
+    });
+
+    renderSettings();
+
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.UPDATE_SETTINGS, {
+        settings: validatedUpdates,
       });
 
-      const url = URL.createObjectURL(blob);
+      if (response?.error) {
+        throw new Error(response.error);
+      }
 
-      const anchor = document.createElement("a");
+      if (response?.settings) {
+        settings = normalizeSettings(response.settings);
+      }
 
-      anchor.href = url;
-      anchor.download = "ambient-flow-settings.json";
+      renderSettings();
 
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
+      if (!options.silent) {
+        showStatus("Settings saved successfully.");
+      }
 
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-      showToast("Settings exported successfully.");
+      return true;
     } catch (error) {
-      console.error("[AmbientFlow] Export error:", error);
-      showToast("Could not export settings.");
+      settings = previousSettings;
+
+      renderSettings();
+
+      showStatus(error.message || "Could not save settings.", "error");
+
+      return false;
     }
-  });
+  }
 
-  // Open import file picker
-  importButton.addEventListener("click", () => {
-    importFile.click();
-  });
-
-  // Import settings from JSON
-  importFile.addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-
-    if (!file) return;
-
-    try {
-      if (file.size > 1024 * 1024) {
-        throw new Error("File is too large. Maximum size is 1 MB.");
-      }
-
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-
-      const imported = parsed.settings || parsed;
-
-      if (
-        !imported ||
-        typeof imported !== "object" ||
-        Array.isArray(imported)
-      ) {
-        throw new Error("Invalid settings file.");
-      }
-
-      const safeSettings = {};
-
-      for (const key of SETTINGS_KEYS) {
-        if (Object.prototype.hasOwnProperty.call(imported, key)) {
-          safeSettings[key] = imported[key];
-        }
-      }
-
-      if (Object.keys(safeSettings).length === 0) {
-        throw new Error("No compatible settings found.");
-      }
-
-      const merged = {
-        ...DEFAULTS,
-        ...safeSettings,
-      };
-
-      validateSettings(merged);
-
-      if (
-        typeof merged.frozenColor !== "string" ||
-        !/^#[0-9a-fA-F]{6}$/.test(merged.frozenColor)
-      ) {
-        throw new Error("Invalid frozen color.");
-      }
-
-      if (
-        typeof merged.customColor !== "string" ||
-        !/^#[0-9a-fA-F]{6}$/.test(merged.customColor)
-      ) {
-        throw new Error("Invalid custom color.");
-      }
-
-      if (
-        typeof merged.lastColor !== "string" ||
-        !/^#[0-9a-fA-F]{6}$/.test(merged.lastColor)
-      ) {
-        throw new Error("Invalid last color.");
-      }
-
-      if (
-        !merged.channelProfiles ||
-        typeof merged.channelProfiles !== "object" ||
-        Array.isArray(merged.channelProfiles)
-      ) {
-        throw new Error("Invalid channel profiles.");
-      }
-
-      await saveSettings(safeSettings);
-
-      showToast("Settings imported successfully.");
-    } catch (error) {
-      console.error("[AmbientFlow] Import error:", error);
-      showToast(error.message || "Could not import settings.", 4000);
-    } finally {
-      importFile.value = "";
+  function scheduleSave(key, value) {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
     }
-  });
 
-  // Reset settings
-  resetButton.addEventListener("click", async () => {
-    const confirmed = confirm(
-      "Are you sure you want to reset all Ambient Flow settings? " +
-        "Your saved channel profiles will also be removed.",
+    saveTimeout = setTimeout(() => {
+      saveSettings({ [key]: value }, { silent: true });
+    }, 350);
+  }
+
+  function bindBooleanControl(key) {
+    const element = elements[key];
+
+    if (!element) return;
+
+    element.addEventListener("change", () => {
+      saveSettings({
+        [key]: Boolean(element.checked),
+      });
+    });
+  }
+
+  function bindRangeControl(key) {
+    const element = elements[key];
+
+    if (!element) return;
+
+    element.addEventListener("input", () => {
+      const value = Number(element.value);
+
+      const suffix =
+        key === "glowIntensity"
+          ? "%"
+          : key === "samplingInterval" || key === "transitionDuration"
+            ? " ms"
+            : "";
+
+      const output = elements[`${key}Value`];
+
+      if (output) {
+        output.textContent = `${value}${suffix}`;
+      }
+    });
+
+    element.addEventListener("change", () => {
+      scheduleSave(key, Number(element.value));
+    });
+  }
+
+  function bindSelectControl(key) {
+    const element = elements[key];
+
+    if (!element) return;
+
+    element.addEventListener("change", () => {
+      saveSettings({
+        [key]: element.value,
+      });
+    });
+  }
+
+  function bindColorControl(key) {
+    const element = elements[key];
+
+    if (!element) return;
+
+    element.addEventListener("input", () => {
+      const color = element.value;
+
+      document.documentElement.style.setProperty(
+        "--options-preview-color",
+        color,
+      );
+    });
+
+    element.addEventListener("change", () => {
+      saveSettings({
+        [key]: element.value,
+      });
+    });
+  }
+
+  async function resetAllSettings() {
+    const confirmed = window.confirm(
+      "Restore all settings to their default values?",
     );
 
     if (!confirmed) return;
 
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+      saveTimeout = null;
+    }
+
+    const previousSettings = { ...settings };
+
+    settings = normalizeSettings();
+
+    renderSettings();
+
     try {
-      await chrome.storage.local.clear();
+      // Reset the active theme first.
+      await sendMessage(MESSAGE_TYPES.RESET_THEME);
 
-      await chrome.storage.local.set(DEFAULTS);
+      // Persist all default settings.
+      const response = await sendMessage(MESSAGE_TYPES.UPDATE_SETTINGS, {
+        settings: { ...DEFAULT_SETTINGS },
+      });
 
-      currentSettings = { ...DEFAULTS };
+      if (response?.error) {
+        throw new Error(response.error);
+      }
+
+      if (response?.settings) {
+        settings = normalizeSettings(response.settings);
+      }
 
       renderSettings();
 
-      showToast("All settings restored to defaults.");
+      showStatus("Default settings restored.");
     } catch (error) {
-      console.error("[AmbientFlow] Reset error:", error);
-      showToast("Could not reset settings.");
+      settings = previousSettings;
+
+      renderSettings();
+
+      showStatus(error.message || "Could not restore defaults.", "error");
     }
-  });
-
-  // Highlight active navigation section
-  function initializeNavigation() {
-    const links = document.querySelectorAll(".nav-link");
-    const sections = document.querySelectorAll(".settings-section");
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
-
-        if (!visible.length) return;
-
-        const activeId = visible[0].target.id;
-
-        links.forEach((link) => {
-          link.classList.toggle(
-            "active",
-            link.getAttribute("href") === `#${activeId}`,
-          );
-        });
-      },
-      {
-        rootMargin: "-10% 0px -65% 0px",
-        threshold: [0, 0.2, 0.5],
-      },
-    );
-
-    sections.forEach((section) => observer.observe(section));
   }
 
-  // Listen for settings changes from popup
-  chrome.storage.onChanged.addListener((changes, areaName) => {
+  function bindEvents() {
+    BOOLEAN_KEYS.forEach(bindBooleanControl);
+
+    [
+      "samplingInterval",
+      "sceneThreshold",
+      "glowIntensity",
+      "transitionDuration",
+    ].forEach(bindRangeControl);
+
+    bindSelectControl("performanceMode");
+
+    bindColorControl("customColor");
+
+    elements.saveButton?.addEventListener("click", async () => {
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+
+      const updates = {};
+
+      Object.keys(DEFAULT_SETTINGS).forEach((key) => {
+        const element = elements[key];
+
+        if (element) {
+          updates[key] = getControlValue(key, element);
+        }
+      });
+
+      await saveSettings(updates);
+    });
+
+    elements.resetButton?.addEventListener("click", resetAllSettings);
+
+    elements.restoreDefaultsButton?.addEventListener("click", resetAllSettings);
+  }
+
+  function handleStorageChange(changes, areaName) {
     if (areaName !== "local") return;
 
-    for (const [key, change] of Object.entries(changes)) {
-      if (key in DEFAULTS) {
-        currentSettings[key] =
-          change.newValue === undefined ? DEFAULTS[key] : change.newValue;
+    const updates = {};
+
+    Object.entries(changes).forEach(([key, change]) => {
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) {
+        updates[key] = change.newValue;
       }
-    }
+    });
+
+    if (!Object.keys(updates).length) return;
+
+    settings = normalizeSettings({
+      ...settings,
+      ...updates,
+    });
 
     renderSettings();
-  });
-
-  // Initialize page
-  async function initialize() {
-    try {
-      await loadSettings();
-      initializeNavigation();
-
-      console.info("[AmbientFlow] Options page ready.");
-    } catch (error) {
-      console.error("[AmbientFlow] Options initialization:", error);
-      showToast("Could not load settings.");
-    }
   }
 
-  initialize();
-});
+  function initializeStorageListener() {
+    if (typeof chrome === "undefined" || !chrome.storage?.onChanged) {
+      return;
+    }
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+  }
+
+  async function initialize() {
+    if (isInitialized) return;
+
+    isInitialized = true;
+
+    cacheElements();
+
+    setLoading(true);
+
+    bindEvents();
+
+    initializeStorageListener();
+
+    await loadSettings();
+
+    setLoading(false);
+  }
+
+  document.addEventListener("DOMContentLoaded", initialize, { once: true });
+})();

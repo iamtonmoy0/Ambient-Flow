@@ -1,407 +1,518 @@
-"use strict";
+/**
+ * YouTube Ambient Flow
+ * Popup Controller
+ */
 
-document.addEventListener("DOMContentLoaded", async () => {
-  const $ = (selector) => document.querySelector(selector);
+(() => {
+  "use strict";
 
-  const elements = {
-    enabled: $("#enabledToggle"),
-    statusText: $("#statusText"),
-    statusDescription: $("#statusDescription"),
-    statusDot: $("#statusDot"),
-
-    intensity: $("#intensity"),
-    intensityValue: $("#intensityValue"),
-
-    saturation: $("#saturation"),
-    saturationValue: $("#saturationValue"),
-
-    glow: $("#glowToggle"),
-    focus: $("#focusToggle"),
-    freeze: $("#freezeToggle"),
-    scene: $("#sceneToggle"),
-
-    customColor: $("#customColor"),
-    colorValue: $("#colorValue"),
-
-    applyColor: $("#applyColorButton"),
-    settings: $("#settingsButton"),
-    advanced: $("#advancedButton"),
-
-    toast: $("#toast"),
-  };
-
-  const DEFAULTS = {
+  const DEFAULT_SETTINGS = {
     enabled: true,
-    mode: "cinematic",
-    intensity: 68,
-    saturation: 72,
     ambientGlow: true,
-    focusMode: false,
-    frozen: false,
-    sceneDetection: true,
-    customColor: "#243b55",
+    focusModeEnabled: false,
+    performanceMode: "balanced",
+    samplingInterval: 700,
+    sceneThreshold: 18,
+    glowIntensity: 65,
   };
 
-  let settings = { ...DEFAULTS };
-  let activeTab = null;
-  let toastTimeout = null;
+  const MESSAGE_TYPES = {
+    GET_STATUS: "GET_STATUS",
+    GET_SETTINGS: "GET_SETTINGS",
+    UPDATE_SETTINGS: "UPDATE_SETTINGS",
+    TOGGLE_AMBIENT_FLOW: "TOGGLE_AMBIENT_FLOW",
+    TOGGLE_FOCUS_MODE: "TOGGLE_FOCUS_MODE",
+    RESET_THEME: "RESET_THEME",
+  };
 
-  // Show popup notification
-  function showToast(message) {
-    elements.toast.textContent = message;
-    elements.toast.classList.add("show");
+  const elements = {};
 
-    clearTimeout(toastTimeout);
+  let settings = { ...DEFAULT_SETTINGS };
+  let status = null;
+  let isInitialized = false;
+  let refreshTimer = null;
 
-    toastTimeout = setTimeout(() => {
-      elements.toast.classList.remove("show");
-    }, 2200);
+  function getElement(id) {
+    return document.getElementById(id);
   }
 
-  // Get current active tab
-  async function getYouTubeTab() {
-    const tabs = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
+  function cacheElements() {
+    const ids = [
+      "masterToggle",
+      "ambientStatus",
+      "statusText",
+      "statusIndicator",
+      "currentColor",
+      "currentColorText",
+      "focusToggle",
+      "performanceMode",
+      "glowIntensity",
+      "glowIntensityValue",
+      "resetButton",
+      "settingsButton",
+      "optionsButton",
+      "videoTitle",
+      "videoStatus",
+      "samplingInterval",
+      "sceneStatus",
+      "errorMessage",
+      "loadingIndicator",
+    ];
+
+    ids.forEach((id) => {
+      elements[id] = getElement(id);
     });
-
-    const tab = tabs[0];
-
-    if (!tab?.url) return null;
-
-    try {
-      const url = new URL(tab.url);
-
-      if (
-        url.hostname === "youtube.com" ||
-        url.hostname === "www.youtube.com" ||
-        url.hostname === "m.youtube.com"
-      ) {
-        return tab;
-      }
-    } catch {
-      return null;
-    }
-
-    return null;
   }
 
-  // Send a message to the content script
-  async function sendToContent(type, payload = {}) {
-    if (!activeTab?.id) {
-      return {
-        success: false,
-        error: "Open YouTube first.",
-      };
-    }
-
-    try {
-      return await chrome.tabs.sendMessage(activeTab.id, {
-        type,
-        ...payload,
-      });
-    } catch (error) {
-      return {
-        success: false,
-        error: "Refresh YouTube and try again.",
-      };
-    }
-  }
-
-  // Read saved settings
-  async function loadSettings() {
-    const stored = await chrome.storage.local.get(null);
-
-    settings = {
-      ...DEFAULTS,
-      ...stored,
-    };
-
-    renderSettings();
-  }
-
-  // Update popup controls
-  function renderSettings() {
-    elements.enabled.checked = Boolean(settings.enabled);
-
-    elements.intensity.value = settings.intensity;
-    elements.intensityValue.textContent = `${settings.intensity}%`;
-
-    elements.saturation.value = settings.saturation;
-    elements.saturationValue.textContent = `${settings.saturation}%`;
-
-    elements.glow.checked = Boolean(settings.ambientGlow);
-    elements.focus.checked = Boolean(settings.focusMode);
-    elements.freeze.checked = Boolean(settings.frozen);
-    elements.scene.checked = Boolean(settings.sceneDetection);
-
-    elements.customColor.value = settings.customColor || DEFAULTS.customColor;
-
-    elements.colorValue.textContent = elements.customColor.value.toUpperCase();
-
-    document.querySelectorAll(".mode-button").forEach((button) => {
-      button.classList.toggle("active", button.dataset.mode === settings.mode);
-    });
-
-    updateStatus();
-  }
-
-  // Update connection/status display
-  function updateStatus(status = null) {
-    const enabled = Boolean(settings.enabled);
-
-    elements.statusDot.className = "status-dot";
-
-    if (!activeTab) {
-      elements.statusText.textContent = "YouTube not detected";
-      elements.statusDescription.textContent =
-        "Open a YouTube video to get started.";
-
-      elements.statusDot.classList.add("error");
-      return;
-    }
-
-    if (!enabled) {
-      elements.statusText.textContent = "Ambient Flow disabled";
-      elements.statusDescription.textContent =
-        "Turn it on to activate dynamic themes.";
-
-      return;
-    }
-
-    if (status?.success && status.status) {
-      const analyzer = status.status.analyzer;
-
-      if (analyzer?.videoDetected) {
-        elements.statusText.textContent = "Ambient Flow active";
-        elements.statusDescription.textContent = analyzer.videoPaused
-          ? "Video paused"
-          : "Analyzing video colors";
-
-        elements.statusDot.classList.add("active");
+  function sendMessage(type, payload = {}) {
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+        reject(new Error("Extension runtime unavailable"));
         return;
       }
-    }
 
-    elements.statusText.textContent = "Ambient Flow enabled";
-    elements.statusDescription.textContent = "Waiting for a supported video.";
+      chrome.runtime.sendMessage(
+        {
+          type,
+          ...payload,
+        },
+        (response) => {
+          const error = chrome.runtime.lastError;
 
-    elements.statusDot.classList.add("active");
+          if (error) {
+            reject(new Error(error.message));
+            return;
+          }
+
+          resolve(response);
+        },
+      );
+    });
   }
 
-  // Save settings to Chrome storage
-  async function saveSettings(values) {
-    try {
-      await chrome.storage.local.set(values);
+  function setText(element, value) {
+    if (!element) return;
 
-      settings = {
-        ...settings,
-        ...values,
-      };
+    element.textContent = value ?? "";
+  }
+
+  function showError(message) {
+    if (!elements.errorMessage) return;
+
+    elements.errorMessage.textContent = message;
+    elements.errorMessage.hidden = false;
+  }
+
+  function clearError() {
+    if (!elements.errorMessage) return;
+
+    elements.errorMessage.textContent = "";
+    elements.errorMessage.hidden = true;
+  }
+
+  function setLoading(loading) {
+    if (elements.loadingIndicator) {
+      elements.loadingIndicator.hidden = !loading;
+    }
+
+    document.body.classList.toggle("is-loading", Boolean(loading));
+  }
+
+  function updateMasterToggle(enabled) {
+    if (!elements.masterToggle) return;
+
+    elements.masterToggle.checked = Boolean(enabled);
+
+    elements.masterToggle.setAttribute(
+      "aria-checked",
+      String(Boolean(enabled)),
+    );
+  }
+
+  function updateFocusToggle(enabled) {
+    if (!elements.focusToggle) return;
+
+    elements.focusToggle.checked = Boolean(enabled);
+  }
+
+  function updateStatusIndicator(active, text) {
+    if (elements.statusIndicator) {
+      elements.statusIndicator.classList.toggle("active", Boolean(active));
+
+      elements.statusIndicator.classList.toggle("inactive", !active);
+    }
+
+    setText(elements.statusText, text);
+    setText(elements.ambientStatus, text);
+  }
+
+  function updateColor(color) {
+    if (!color) return;
+
+    const validColor =
+      typeof color === "string" && CSS.supports("color", color);
+
+    if (!validColor) return;
+
+    if (elements.currentColor) {
+      elements.currentColor.style.backgroundColor = color;
+    }
+
+    setText(elements.currentColorText, color);
+  }
+
+  function updateVideoInformation(video = {}) {
+    setText(elements.videoTitle, video.title || "No active video");
+
+    let videoStatus = "No video detected";
+
+    if (video.isPlaying) {
+      videoStatus = "Playing";
+    } else if (video.isPaused) {
+      videoStatus = "Paused";
+    } else if (video.isEnded) {
+      videoStatus = "Ended";
+    } else if (video.isBlocked) {
+      videoStatus = "Frame access unavailable";
+    } else if (video.exists) {
+      videoStatus = "Video detected";
+    }
+
+    setText(elements.videoStatus, videoStatus);
+  }
+
+  function updatePerformanceInformation(performance = {}) {
+    if (performance.currentInterval) {
+      setText(elements.samplingInterval, `${performance.currentInterval} ms`);
+    }
+
+    if (elements.sceneStatus) {
+      setText(
+        elements.sceneStatus,
+        performance.sceneChanges != null
+          ? String(performance.sceneChanges)
+          : "0",
+      );
+    }
+  }
+
+  function renderSettings() {
+    updateMasterToggle(settings.enabled);
+    updateFocusToggle(settings.focusModeEnabled);
+
+    if (elements.performanceMode) {
+      elements.performanceMode.value = settings.performanceMode || "balanced";
+    }
+
+    if (elements.glowIntensity) {
+      elements.glowIntensity.value = settings.glowIntensity ?? 65;
+    }
+
+    setText(elements.glowIntensityValue, `${settings.glowIntensity ?? 65}%`);
+  }
+
+  function renderStatus(data = {}) {
+    status = data;
+
+    const enabled = data.enabled ?? settings.enabled;
+
+    const playing = Boolean(data.isPlaying);
+
+    const active = Boolean(enabled && (playing || data.analysisActive));
+
+    let label = "Disabled";
+
+    if (!enabled) {
+      label = "Ambient flow disabled";
+    } else if (data.isBlocked) {
+      label = "Video frame access blocked";
+    } else if (playing && data.analysisActive) {
+      label = "Analyzing video";
+    } else if (playing) {
+      label = "Waiting for video analysis";
+    } else if (data.isPaused) {
+      label = "Paused";
+    } else {
+      label = "Waiting for video";
+    }
+
+    updateStatusIndicator(active, label);
+
+    updateVideoInformation({
+      exists: data.hasVideo,
+      title: data.videoTitle,
+      isPlaying: data.isPlaying,
+      isPaused: data.isPaused,
+      isEnded: data.isEnded,
+      isBlocked: data.isBlocked,
+    });
+
+    updatePerformanceInformation(data.performance || {});
+
+    updateColor(data.currentColor || data.palette?.primary);
+  }
+
+  async function loadSettings() {
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.GET_SETTINGS);
+
+      if (response?.settings) {
+        settings = {
+          ...DEFAULT_SETTINGS,
+          ...response.settings,
+        };
+      } else if (response && !response.error) {
+        settings = {
+          ...DEFAULT_SETTINGS,
+          ...response,
+        };
+      }
+
+      renderSettings();
+
+      return settings;
+    } catch (error) {
+      console.warn("[AmbientFlow] Could not load settings:", error);
+
+      return settings;
+    }
+  }
+
+  async function loadStatus() {
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.GET_STATUS);
+
+      if (response) {
+        renderStatus(response);
+      }
+
+      return response;
+    } catch (error) {
+      renderStatus({
+        enabled: settings.enabled,
+        isPlaying: false,
+        hasVideo: false,
+      });
+
+      return null;
+    }
+  }
+
+  async function updateSetting(key, value) {
+    clearError();
+
+    const previous = settings[key];
+
+    settings[key] = value;
+    renderSettings();
+
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.UPDATE_SETTINGS, {
+        settings: {
+          [key]: value,
+        },
+      });
+
+      if (response?.error) {
+        throw new Error(response.error);
+      }
+
+      if (response?.settings) {
+        settings = {
+          ...DEFAULT_SETTINGS,
+          ...response.settings,
+        };
+      }
+
+      renderSettings();
 
       return true;
     } catch (error) {
-      console.error("[AmbientFlow] Settings error:", error);
-      showToast("Could not save settings.");
+      settings[key] = previous;
+      renderSettings();
+
+      showError(error.message || "Could not update settings");
+
       return false;
     }
   }
 
-  // Refresh status from content script
-  async function refreshStatus() {
-    if (!activeTab) {
-      updateStatus();
-      return;
-    }
+  async function toggleAmbientFlow(enabled) {
+    clearError();
 
-    const response = await sendToContent("GET_STATUS");
+    const previous = settings.enabled;
 
-    updateStatus(response);
-  }
+    settings.enabled = enabled;
+    renderSettings();
 
-  // Initialize popup
-  async function initialize() {
     try {
-      await loadSettings();
+      const response = await sendMessage(MESSAGE_TYPES.TOGGLE_AMBIENT_FLOW, {
+        enabled,
+      });
 
-      activeTab = await getYouTubeTab();
-
-      updateStatus();
-
-      if (activeTab) {
-        await refreshStatus();
+      if (response?.error) {
+        throw new Error(response.error);
       }
+
+      if (typeof response?.enabled === "boolean") {
+        settings.enabled = response.enabled;
+      }
+
+      renderSettings();
+      await loadStatus();
+
+      return true;
     } catch (error) {
-      console.error("[AmbientFlow] Popup initialization:", error);
-      showToast("Unable to initialize popup.");
+      settings.enabled = previous;
+      renderSettings();
+
+      showError(error.message || "Could not toggle ambient flow");
+
+      return false;
     }
   }
 
-  // Master toggle
-  elements.enabled.addEventListener("change", async () => {
-    const response = await sendToContent("TOGGLE_AMBIENT_FLOW");
+  async function toggleFocusMode(enabled) {
+    clearError();
 
-    if (!response?.success) {
-      elements.enabled.checked = settings.enabled;
-      showToast(response?.error || "Could not toggle Ambient Flow.");
-      return;
-    }
+    const previous = settings.focusModeEnabled;
 
-    settings.enabled = response.enabled;
+    settings.focusModeEnabled = enabled;
+    renderSettings();
 
-    await saveSettings({
-      enabled: response.enabled,
-    });
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.TOGGLE_FOCUS_MODE, {
+        enabled,
+      });
 
-    updateStatus();
+      if (response?.error) {
+        throw new Error(response.error);
+      }
 
-    showToast(
-      response.enabled ? "Ambient Flow enabled." : "Ambient Flow disabled.",
-    );
-  });
-
-  // Visual mode selection
-  document.querySelectorAll(".mode-button").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const mode = button.dataset.mode;
-
-      await saveSettings({ mode });
+      if (typeof response?.enabled === "boolean") {
+        settings.focusModeEnabled = response.enabled;
+      }
 
       renderSettings();
 
-      showToast(`${mode} mode selected.`);
-    });
-  });
+      return true;
+    } catch (error) {
+      settings.focusModeEnabled = previous;
+      renderSettings();
 
-  // Ambient intensity
-  elements.intensity.addEventListener("input", async () => {
-    const intensity = Number(elements.intensity.value);
+      showError(error.message || "Could not toggle focus mode");
 
-    elements.intensityValue.textContent = `${intensity}%`;
-
-    await saveSettings({ intensity });
-  });
-
-  // Color saturation
-  elements.saturation.addEventListener("input", async () => {
-    const saturation = Number(elements.saturation.value);
-
-    elements.saturationValue.textContent = `${saturation}%`;
-
-    await saveSettings({ saturation });
-  });
-
-  // Ambient glow
-  elements.glow.addEventListener("change", async () => {
-    const ambientGlow = elements.glow.checked;
-
-    await saveSettings({ ambientGlow });
-
-    showToast(ambientGlow ? "Ambient glow enabled." : "Ambient glow disabled.");
-  });
-
-  // Focus mode
-  elements.focus.addEventListener("change", async () => {
-    const response = await sendToContent("TOGGLE_FOCUS_MODE");
-
-    if (!response?.success) {
-      elements.focus.checked = settings.focusMode;
-      showToast(response?.error || "Could not toggle Focus Mode.");
-      return;
+      return false;
     }
-
-    settings.focusMode = response.enabled;
-
-    await saveSettings({
-      focusMode: response.enabled,
-    });
-
-    showToast(
-      response.enabled ? "Focus Mode enabled." : "Focus Mode disabled.",
-    );
-  });
-
-  // Freeze background
-  elements.freeze.addEventListener("change", async () => {
-    const response = await sendToContent("FREEZE_BACKGROUND");
-
-    if (!response?.success) {
-      elements.freeze.checked = settings.frozen;
-      showToast(response?.error || "Could not freeze background.");
-      return;
-    }
-
-    settings.frozen = !settings.frozen;
-
-    await saveSettings({
-      frozen: settings.frozen,
-    });
-
-    renderSettings();
-
-    showToast(
-      settings.frozen
-        ? "Background color frozen."
-        : "Background color unfrozen.",
-    );
-  });
-
-  // Scene detection
-  elements.scene.addEventListener("change", async () => {
-    const sceneDetection = elements.scene.checked;
-
-    await saveSettings({ sceneDetection });
-
-    showToast(
-      sceneDetection ? "Scene detection enabled." : "Scene detection disabled.",
-    );
-  });
-
-  // Custom color preview
-  elements.customColor.addEventListener("input", () => {
-    elements.colorValue.textContent = elements.customColor.value.toUpperCase();
-  });
-
-  // Apply custom color
-  elements.applyColor.addEventListener("click", async () => {
-    const color = elements.customColor.value;
-
-    const response = await sendToContent("SET_CUSTOM_COLOR", { color });
-
-    if (!response?.success) {
-      showToast(response?.error || "Could not apply color.");
-      return;
-    }
-
-    await saveSettings({
-      customColor: color,
-      frozen: true,
-      frozenColor: color,
-    });
-
-    renderSettings();
-
-    showToast("Custom color applied.");
-  });
-
-  // Open advanced settings
-  async function openSettings() {
-    await chrome.runtime.openOptionsPage();
   }
 
-  elements.settings.addEventListener("click", openSettings);
-  elements.advanced.addEventListener("click", openSettings);
+  async function resetTheme() {
+    clearError();
 
-  // Listen for settings changes from other extension pages
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local") return;
-
-    for (const [key, change] of Object.entries(changes)) {
-      settings[key] = change.newValue;
+    if (elements.resetButton) {
+      elements.resetButton.disabled = true;
     }
 
-    renderSettings();
-  });
+    try {
+      const response = await sendMessage(MESSAGE_TYPES.RESET_THEME);
 
-  await initialize();
-});
+      if (response?.error) {
+        throw new Error(response.error);
+      }
+
+      await loadStatus();
+    } catch (error) {
+      showError(error.message || "Could not reset theme");
+    } finally {
+      if (elements.resetButton) {
+        elements.resetButton.disabled = false;
+      }
+    }
+  }
+
+  function openOptions() {
+    if (chrome?.runtime?.openOptionsPage) {
+      chrome.runtime.openOptionsPage();
+    }
+  }
+
+  function bindEvents() {
+    elements.masterToggle?.addEventListener("change", (event) => {
+      toggleAmbientFlow(event.target.checked);
+    });
+
+    elements.focusToggle?.addEventListener("change", (event) => {
+      toggleFocusMode(event.target.checked);
+    });
+
+    elements.performanceMode?.addEventListener("change", (event) => {
+      updateSetting("performanceMode", event.target.value);
+    });
+
+    elements.glowIntensity?.addEventListener("input", (event) => {
+      const value = Number(event.target.value);
+
+      setText(elements.glowIntensityValue, `${value}%`);
+    });
+
+    elements.glowIntensity?.addEventListener("change", (event) => {
+      updateSetting("glowIntensity", Number(event.target.value));
+    });
+
+    elements.resetButton?.addEventListener("click", resetTheme);
+
+    elements.settingsButton?.addEventListener("click", openOptions);
+
+    elements.optionsButton?.addEventListener("click", openOptions);
+  }
+
+  function startAutoRefresh() {
+    stopAutoRefresh();
+
+    refreshTimer = setInterval(() => {
+      if (!document.hidden) {
+        loadStatus();
+      }
+    }, 2000);
+  }
+
+  function stopAutoRefresh() {
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      stopAutoRefresh();
+    } else {
+      loadStatus();
+      startAutoRefresh();
+    }
+  }
+
+  async function initialize() {
+    if (isInitialized) return;
+
+    isInitialized = true;
+
+    cacheElements();
+    setLoading(true);
+
+    bindEvents();
+
+    await loadSettings();
+    await loadStatus();
+
+    setLoading(false);
+
+    startAutoRefresh();
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    window.addEventListener("unload", stopAutoRefresh);
+  }
+
+  document.addEventListener("DOMContentLoaded", initialize, { once: true });
+})();

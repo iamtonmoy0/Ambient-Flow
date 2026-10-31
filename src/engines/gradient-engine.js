@@ -1,232 +1,231 @@
+/**
+ * YouTube Ambient Flow
+ * Gradient Engine
+ *
+ * Generates smooth, responsive ambient backgrounds.
+ */
+
 (() => {
   "use strict";
 
-  const AF = window.AmbientFlow;
-  const utils = AF.utils;
-  const colors = AF.colorEngine;
+  const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
-  const gradientEngine = {
-    // Convert RGB color into CSS HEX
-    hex(color) {
-      return utils.rgbToHex(color);
-    },
+  class GradientEngine {
+    constructor() {
+      this.previousGradient = null;
+      this.transitionDuration = 500;
+      this.intensity = 0.65;
+    }
 
-    // Create a darker background color
-    createBackground(color, intensity = 68) {
-      const hsl = colors.rgbToHsl(color);
-
-      hsl.s = utils.clamp(hsl.s, 15, 75);
-      hsl.l = utils.clamp(5 + intensity * 0.08, 5, 18);
-
-      return colors.hslToRgb(hsl);
-    },
-
-    // Create secondary gradient color
-    createSecondary(color, amount = 25) {
-      return colors.adjustBrightness(color, amount);
-    },
-
-    // Create tertiary gradient color
-    createTertiary(color, amount = -20) {
-      return colors.adjustBrightness(color, amount);
-    },
-
-    // Generate a complete CSS gradient
-    generate(color, settings = {}) {
-      const intensity = utils.clamp(settings.intensity ?? 68, 0, 100);
-
-      const style = settings.backgroundStyle || "gradient";
-
-      const primary = colors.adjustSaturation(color, settings.saturation ?? 72);
-
-      const background = this.createBackground(primary, intensity);
-
-      const secondary = this.createSecondary(primary, 20);
-
-      const tertiary = this.createTertiary(primary, -25);
-
-      const backgroundHex = this.hex(background);
-      const primaryHex = this.hex(primary);
-      const secondaryHex = this.hex(secondary);
-      const tertiaryHex = this.hex(tertiary);
-
-      if (style === "solid") {
-        return {
-          background: backgroundHex,
-          primary: primaryHex,
-          secondary: secondaryHex,
-          tertiary: tertiaryHex,
-          gradient: backgroundHex,
-          glow: `0 0 80px ${primaryHex}33`,
-        };
+    normalizeColor(color) {
+      if (typeof color === "string") {
+        return this.hexToRgb(color);
       }
 
-      if (style === "radial") {
-        return {
-          background: backgroundHex,
-          primary: primaryHex,
-          secondary: secondaryHex,
-          tertiary: tertiaryHex,
-          gradient: `
-            radial-gradient(
-              ellipse at 50% 0%,
-              ${primaryHex}55 0%,
-              ${backgroundHex} 65%
-            )
-          `,
-          glow: `0 0 100px ${primaryHex}44`,
-        };
+      if (
+        !color ||
+        !Number.isFinite(color.r) ||
+        !Number.isFinite(color.g) ||
+        !Number.isFinite(color.b)
+      ) {
+        return null;
       }
 
       return {
-        background: backgroundHex,
-        primary: primaryHex,
-        secondary: secondaryHex,
-        tertiary: tertiaryHex,
-
-        gradient: `
-          linear-gradient(
-            135deg,
-            ${backgroundHex} 0%,
-            ${tertiaryHex} 45%,
-            ${primaryHex}55 100%
-          )
-        `,
-
-        glow: `
-          0 0 80px ${primaryHex}33,
-          0 0 140px ${secondaryHex}22
-        `,
+        r: this.clamp(color.r),
+        g: this.clamp(color.g),
+        b: this.clamp(color.b),
       };
-    },
+    }
 
-    // Generate layered ambient glow
-    generateGlow(color, intensity = 68) {
-      const hex = this.hex(color);
+    clamp(value) {
+      return Math.max(0, Math.min(255, value));
+    }
 
-      const opacity = utils.clamp(intensity / 100, 0, 1);
+    hexToRgb(hex) {
+      if (typeof hex !== "string") return null;
+
+      const match = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+
+      if (!match) return null;
+
+      return {
+        r: parseInt(match[1], 16),
+        g: parseInt(match[2], 16),
+        b: parseInt(match[3], 16),
+      };
+    }
+
+    rgbToString(color, alpha = 1) {
+      const { r, g, b } = color;
+
+      return `rgba(${this.clamp(r)}, ${this.clamp(g)}, ${this.clamp(b)}, ${Math.max(0, Math.min(1, alpha))})`;
+    }
+
+    mix(colorA, colorB, amount) {
+      const t = Math.max(0, Math.min(1, amount));
+
+      return {
+        r: colorA.r + (colorB.r - colorA.r) * t,
+        g: colorA.g + (colorB.g - colorA.g) * t,
+        b: colorA.b + (colorB.b - colorA.b) * t,
+      };
+    }
+
+    createLinear(color, options = {}) {
+      const source = this.normalizeColor(color);
+
+      if (!source) return null;
+
+      const intensity = Math.max(
+        0,
+        Math.min(1, Number(options.intensity ?? this.intensity)),
+      );
+
+      const secondary = this.mix(source, { r: 10, g: 10, b: 10 }, 0.45);
+
+      const tertiary = this.mix(source, { r: 0, g: 0, b: 0 }, 0.75);
+
+      return `
+        linear-gradient(
+          135deg,
+          ${this.rgbToString(source, intensity * 0.32)} 0%,
+          ${this.rgbToString(secondary, intensity * 0.22)} 45%,
+          ${this.rgbToString(tertiary, intensity * 0.16)} 100%
+        )
+      `.trim();
+    }
+
+    createRadial(color, options = {}) {
+      const source = this.normalizeColor(color);
+
+      if (!source) return null;
+
+      const intensity = Math.max(
+        0,
+        Math.min(1, Number(options.intensity ?? this.intensity)),
+      );
 
       return `
         radial-gradient(
           ellipse at 50% 0%,
-          ${hex}${Math.round(opacity * 70)
-            .toString(16)
-            .padStart(2, "0")},
+          ${this.rgbToString(source, intensity * 0.35)} 0%,
+          ${this.rgbToString(source, intensity * 0.16)} 35%,
+          transparent 75%
+        )
+      `.trim();
+    }
+
+    createAmbient(color, options = {}) {
+      const source = this.normalizeColor(color);
+
+      if (!source) return null;
+
+      const intensity = Math.max(
+        0,
+        Math.min(1, Number(options.intensity ?? this.intensity)),
+      );
+
+      const secondary = this.mix(source, { r: 0, g: 0, b: 0 }, 0.4);
+
+      const tertiary = this.mix(source, { r: 255, g: 255, b: 255 }, 0.12);
+
+      const first = `
+        radial-gradient(
+          ellipse at 15% 10%,
+          ${this.rgbToString(source, intensity * 0.24)} 0%,
+          transparent 55%
+        )
+      `;
+
+      const second = `
+        radial-gradient(
+          ellipse at 85% 15%,
+          ${this.rgbToString(tertiary, intensity * 0.14)} 0%,
+          transparent 50%
+        )
+      `;
+
+      const third = `
+        linear-gradient(
+          145deg,
+          ${this.rgbToString(secondary, intensity * 0.15)},
           transparent 70%
         )
       `;
-    },
 
-    // Generate CSS variables for the theme engine
-    createPalette(color, settings = {}) {
-      const result = this.generate(color, settings);
+      return [first.trim(), second.trim(), third.trim()].join(", ");
+    }
 
-      return {
-        "--af-primary": result.primary,
-        "--af-secondary": result.secondary,
-        "--af-tertiary": result.tertiary,
-        "--af-background": result.background,
-        "--af-gradient": result.gradient,
-        "--af-glow": result.glow,
-      };
-    },
-  };
+    create(color, options = {}) {
+      const type = options.type || "ambient";
 
-  AF.gradientEngine = gradientEngine;
-})();
+      let gradient;
 
-(() => {
-  "use strict";
+      switch (type) {
+        case "linear":
+          gradient = this.createLinear(color, options);
+          break;
 
-  const AF = window.AmbientFlow;
-  const utils = AF.utils;
-  const colors = AF.colorEngine;
-  const gradients = AF.gradientEngine;
+        case "radial":
+          gradient = this.createRadial(color, options);
+          break;
 
-  const paletteEngine = {
-    // Generate the complete YouTube theme palette
-    generate(color, settings = {}) {
-      const intensity = utils.clamp(settings.intensity ?? 68, 0, 100);
+        case "ambient":
+        default:
+          gradient = this.createAmbient(color, options);
+          break;
+      }
 
-      const saturation = utils.clamp(settings.saturation ?? 72, 0, 100);
+      if (gradient) {
+        this.previousGradient = gradient;
+      }
 
-      const primary = colors.adjustSaturation(color, saturation);
+      return gradient;
+    }
 
-      const background = gradients.createBackground(primary, intensity);
+    setIntensity(value) {
+      const number = Number(value);
 
-      const surface = colors.adjustBrightness(background, 4);
+      if (!Number.isFinite(number)) {
+        return false;
+      }
 
-      const elevatedSurface = colors.adjustBrightness(background, 8);
+      this.intensity = Math.max(0, Math.min(1, number));
 
-      const secondary = colors.adjustBrightness(primary, 18);
+      return true;
+    }
 
-      const accent = colors.adjustBrightness(primary, 30);
+    setTransitionDuration(value) {
+      const number = Number(value);
 
-      const isLight = utils.luminance(background) > 0.35;
+      if (!Number.isFinite(number)) {
+        return false;
+      }
 
-      const text = isLight ? "#111111" : "#F5F5F5";
-      const mutedText = isLight ? "#555555" : "#AAAAAA";
+      this.transitionDuration = Math.max(0, Math.min(3000, number));
 
-      const border = isLight
-        ? "rgba(0, 0, 0, 0.12)"
-        : "rgba(255, 255, 255, 0.10)";
+      return true;
+    }
 
-      const palette = {
-        primary: colors.toHex(primary),
-        secondary: colors.toHex(secondary),
-        accent: colors.toHex(accent),
+    getTransitionDuration() {
+      return this.transitionDuration;
+    }
 
-        background: colors.toHex(background),
-        surface: colors.toHex(surface),
-        elevatedSurface: colors.toHex(elevatedSurface),
+    getPreviousGradient() {
+      return this.previousGradient;
+    }
 
-        text,
-        mutedText,
-        border,
+    reset() {
+      this.previousGradient = null;
+    }
 
-        gradient: gradients.generate(primary, settings).gradient,
-        glow: gradients.generateGlow(primary, intensity),
+    destroy() {
+      this.reset();
+    }
+  }
 
-        intensity,
-        saturation,
-      };
+  AF.GradientEngine = GradientEngine;
 
-      return palette;
-    },
-
-    // Convert palette to CSS custom properties
-    toCSSVariables(palette) {
-      return {
-        "--af-primary": palette.primary,
-        "--af-secondary": palette.secondary,
-        "--af-tertiary": palette.accent,
-
-        "--af-background": palette.background,
-        "--af-surface": palette.surface,
-        "--af-surface-elevated": palette.elevatedSurface,
-
-        "--af-text": palette.text,
-        "--af-text-muted": palette.mutedText,
-
-        "--af-border": palette.border,
-        "--af-gradient": palette.gradient,
-        "--af-glow": palette.glow,
-
-        "--af-intensity": String(palette.intensity / 100),
-      };
-    },
-
-    // Return a safe default palette
-    getDefault() {
-      return this.generate(
-        { r: 36, g: 59, b: 85 },
-        {
-          intensity: 68,
-          saturation: 72,
-        },
-      );
-    },
-  };
-
-  AF.paletteEngine = paletteEngine;
+  AF.gradientEngine = AF.gradientEngine || new GradientEngine();
 })();

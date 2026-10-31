@@ -1,7 +1,16 @@
-/* ==========================================
-   YOUTUBE AMBIENT FLOW
-   Reliable Video and Playback Detector
-========================================== */
+/**
+ * YouTube Ambient Flow
+ * Reliable Video and Playback Detector
+ *
+ * Features:
+ * - Detects standard YouTube videos.
+ * - Detects YouTube Shorts.
+ * - Tracks play, pause, buffering, seeking and ended states.
+ * - Detects YouTube SPA navigation.
+ * - Detects video element replacement and source changes.
+ * - Separates playback state from tab visibility.
+ * - Provides compatibility events for VideoAnalyzer.
+ */
 
 (() => {
   "use strict";
@@ -9,8 +18,9 @@
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
   class VideoDetector {
-    constructor() {
+    constructor(options = {}) {
       this.currentVideo = null;
+      this.currentSource = "";
 
       this.observer = null;
       this.navigationObserver = null;
@@ -23,9 +33,9 @@
       this.intervalTimer = null;
       this.navigationTimer = null;
 
-      this.scanInterval = 1000;
-      this.lastUrl = location.href;
+      this.scanInterval = options.scanInterval || 1000;
 
+      this.lastUrl = location.href;
       this.videoListeners = [];
 
       this.handleVideoEvent = this.handleVideoEvent.bind(this);
@@ -35,6 +45,8 @@
       this.handleNavigation = this.handleNavigation.bind(this);
 
       this.handleVisibility = this.handleVisibility.bind(this);
+
+      this.handlePageHide = this.handlePageHide.bind(this);
     }
 
     /* ======================================
@@ -62,7 +74,7 @@
 
       listeners.delete(callback);
 
-      if (!listeners.size) {
+      if (listeners.size === 0) {
         this.events.delete(eventName);
       }
     }
@@ -85,40 +97,102 @@
        VIDEO DISCOVERY
     ====================================== */
 
-    findVideo() {
-      const selectors = [
-        "#movie_player video",
-        "ytd-player video",
-        "ytd-reel-video-renderer video",
-        "ytd-shorts video",
-      ];
+    isValidVideo(video) {
+      return (
+        typeof HTMLVideoElement !== "undefined" &&
+        video instanceof HTMLVideoElement &&
+        video.isConnected
+      );
+    }
 
-      for (const selector of selectors) {
-        const video = document.querySelector(selector);
-
-        if (video instanceof HTMLVideoElement && video.isConnected) {
-          return video;
-        }
+    isVisible(video) {
+      if (!this.isValidVideo(video)) {
+        return false;
       }
 
-      const videos = [...document.querySelectorAll("video")];
+      const rect = video.getBoundingClientRect();
 
-      const visibleVideos = videos
-        .filter((video) => {
-          if (!video.isConnected) return false;
+      const style = window.getComputedStyle(video);
 
-          const rect = video.getBoundingClientRect();
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity) !== 0
+      );
+    }
 
-          return rect.width > 0 && rect.height > 0;
-        })
-        .sort((a, b) => {
-          const rectA = a.getBoundingClientRect();
-          const rectB = b.getBoundingClientRect();
+    getVideoScore(video) {
+      if (!this.isValidVideo(video)) {
+        return -1;
+      }
 
-          return rectB.width * rectB.height - rectA.width * rectA.height;
+      const rect = video.getBoundingClientRect();
+
+      const area = Math.max(0, rect.width * rect.height);
+
+      let score = area;
+
+      const player = video.closest("#movie_player");
+
+      if (player) {
+        score += 100000000;
+      }
+
+      const shorts = video.closest("ytd-reel-video-renderer, ytd-shorts");
+
+      if (shorts) {
+        score += 50000000;
+      }
+
+      if (!video.paused && !video.ended) {
+        score += 25000000;
+      }
+
+      if (this.isVisible(video)) {
+        score += 10000000;
+      }
+
+      return score;
+    }
+
+    findVideo() {
+      const selectors = [
+        "#movie_player video.html5-main-video",
+        "#movie_player video",
+        "ytd-shorts video",
+        "ytd-reel-video-renderer video",
+        "video.html5-main-video",
+      ];
+
+      const candidates = new Set();
+
+      for (const selector of selectors) {
+        document.querySelectorAll(selector).forEach((video) => {
+          if (this.isValidVideo(video)) {
+            candidates.add(video);
+          }
         });
+      }
 
-      return visibleVideos[0] || null;
+      // Include other videos as a fallback.
+      document.querySelectorAll("video").forEach((video) => {
+        if (this.isValidVideo(video)) {
+          candidates.add(video);
+        }
+      });
+
+      if (!candidates.size) {
+        return null;
+      }
+
+      return [...candidates]
+        .map((video) => ({
+          video,
+          score: this.getVideoScore(video),
+        }))
+        .sort((a, b) => b.score - a.score)[0].video;
     }
 
     /* ======================================
@@ -126,11 +200,7 @@
     ====================================== */
 
     attachVideo(video) {
-      if (
-        !video ||
-        !(video instanceof HTMLVideoElement) ||
-        !video.isConnected
-      ) {
+      if (!this.isValidVideo(video)) {
         return false;
       }
 
@@ -141,6 +211,7 @@
       this.detachVideo();
 
       this.currentVideo = video;
+      this.currentSource = this.getVideoSource(video);
 
       const events = [
         "play",
@@ -154,7 +225,10 @@
         "seeked",
         "loadedmetadata",
         "loadeddata",
+        "canplay",
+        "canplaythrough",
         "durationchange",
+        "error",
       ];
 
       for (const eventName of events) {
@@ -166,21 +240,39 @@
         });
       }
 
-      this.emit("videoDetected", {
-        video,
-        isPlaying: this.isPlaying(video),
-        state: this.getPlaybackState(video),
-        url: location.href,
-      });
+      const state = this.getPlaybackState(video);
+      const playing = this.isPlaying(video);
 
-      // Catch a video that was already playing
-      // before the detector attached its listeners.
-      if (this.isPlaying(video)) {
+      const data = {
+        video,
+        hasVideo: true,
+        isPlaying: playing,
+        isPaused: video.paused,
+        state,
+        source: this.currentSource,
+        url: location.href,
+      };
+
+      this.emit("videoDetected", data);
+
+      // Compatibility event for modules listening
+      // for videoChanged.
+      this.emit("videoChanged", data);
+
+      if (playing) {
         this.emit("videoPlaying", {
-          video,
+          ...data,
           state: "PLAYING",
         });
       }
+
+      console.info(
+        "[Ambient Flow] Video detected:",
+        video.videoWidth,
+        "x",
+        video.videoHeight,
+        state,
+      );
 
       return true;
     }
@@ -195,15 +287,63 @@
 
       this.videoListeners = [];
 
-      if (!this.currentVideo) return;
+      if (!this.currentVideo) {
+        return;
+      }
 
       const previousVideo = this.currentVideo;
 
       this.currentVideo = null;
+      this.currentSource = "";
 
       this.emit("videoRemoved", {
         video: previousVideo,
+        hasVideo: false,
+        isPlaying: false,
+        state: "NO_VIDEO",
       });
+    }
+
+    /* ======================================
+       SOURCE DETECTION
+    ====================================== */
+
+    getVideoSource(video = this.currentVideo) {
+      if (!video) return "";
+
+      return video.currentSrc || video.src || video.getAttribute("src") || "";
+    }
+
+    checkVideoSource() {
+      const video = this.currentVideo;
+
+      if (!video || !video.isConnected) {
+        return;
+      }
+
+      const source = this.getVideoSource(video);
+
+      if (source === this.currentSource) {
+        return;
+      }
+
+      const previousSource = this.currentSource;
+
+      this.currentSource = source;
+
+      const data = {
+        video,
+        previousSource,
+        source,
+        isPlaying: this.isPlaying(video),
+        state: this.getPlaybackState(video),
+        url: location.href,
+      };
+
+      this.emit("videoSourceChanged", data);
+      this.emit("videoChanged", data);
+
+      console.info("[Ambient Flow] Video source changed.");
     }
 
     /* ======================================
@@ -211,35 +351,47 @@
     ====================================== */
 
     isPlaying(video = this.currentVideo) {
-      if (!video || !video.isConnected) {
+      if (!this.isValidVideo(video)) {
         return false;
       }
 
-      return (
-        !video.paused &&
-        !video.ended &&
-        !video.seeking &&
-        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-        !document.hidden
-      );
+      // Playback state must not depend on document visibility
+      // or frame availability.
+      return !video.paused && !video.ended;
+    }
+
+    isFrameReady(video = this.currentVideo) {
+      if (!this.isValidVideo(video)) {
+        return false;
+      }
+
+      return video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
     }
 
     getPlaybackState(video = this.currentVideo) {
-      if (!video || !video.isConnected) {
+      if (!this.isValidVideo(video)) {
         return "NO_VIDEO";
       }
 
-      if (video.ended) return "ENDED";
+      if (video.error) {
+        return "ERROR";
+      }
 
-      if (video.paused) return "PAUSED";
+      if (video.ended) {
+        return "ENDED";
+      }
 
-      if (video.seeking) return "SEEKING";
+      if (video.paused) {
+        return "PAUSED";
+      }
+
+      if (video.seeking) {
+        return "SEEKING";
+      }
 
       if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
         return "BUFFERING";
       }
-
-      if (document.hidden) return "HIDDEN";
 
       return "PLAYING";
     }
@@ -258,67 +410,60 @@
       const state = this.getPlaybackState(video);
       const playing = this.isPlaying(video);
 
-      this.emit("playbackChange", {
+      const data = {
         video,
         event: event.type,
         state,
         isPlaying: playing,
-      });
+        isPaused: video.paused,
+        isEnded: video.ended,
+        frameReady: this.isFrameReady(video),
+      };
+
+      this.emit("playbackChange", data);
 
       switch (event.type) {
         case "play":
         case "playing":
         case "seeked":
         case "loadeddata":
+        case "canplay":
+        case "canplaythrough":
           if (playing) {
-            this.emit("videoPlaying", {
-              video,
-              state,
-            });
+            this.emit("videoPlaying", data);
           }
           break;
 
         case "pause":
-          this.emit("videoPaused", {
-            video,
-            state,
-          });
+          this.emit("videoPaused", data);
           break;
 
         case "ended":
-          this.emit("videoEnded", {
-            video,
-            state,
-          });
+          this.emit("videoEnded", data);
           break;
 
         case "waiting":
         case "stalled":
-          this.emit("videoBuffering", {
-            video,
-            state,
-          });
+          this.emit("videoBuffering", data);
           break;
 
         case "emptied":
-          this.emit("videoEmptied", {
-            video,
-            state,
-          });
+          this.emit("videoEmptied", data);
           break;
 
         case "seeking":
-          this.emit("videoSeeking", {
-            video,
-            state,
-          });
+          this.emit("videoSeeking", data);
           break;
 
         case "loadedmetadata":
         case "durationchange":
-          this.emit("videoReady", {
-            video,
-            state,
+          this.emit("videoReady", data);
+          break;
+
+        case "error":
+          this.emit("videoError", {
+            ...data,
+            error: video.error,
           });
           break;
       }
@@ -331,19 +476,11 @@
     handleMutations() {
       if (!this.running) return;
 
-      const detectedVideo = this.findVideo();
-
-      if (detectedVideo !== this.currentVideo) {
-        if (detectedVideo) {
-          this.attachVideo(detectedVideo);
-        } else {
-          this.detachVideo();
-        }
-      }
+      this.scheduleScan(150);
     }
 
     /* ======================================
-       NAVIGATION
+       YOUTUBE NAVIGATION
     ====================================== */
 
     handleNavigation() {
@@ -364,8 +501,8 @@
         currentUrl,
       });
 
-      // Give YouTube time to replace its player.
-      this.scheduleScan(150);
+      // YouTube replaces player elements asynchronously.
+      this.scheduleScan(250);
     }
 
     installNavigationHooks() {
@@ -373,22 +510,28 @@
 
       window.addEventListener("popstate", this.handleNavigation);
 
+      window.addEventListener("pagehide", this.handlePageHide);
+
       document.addEventListener("visibilitychange", this.handleVisibility);
 
       this.navigationObserver = new MutationObserver(() => {
         this.handleNavigation();
       });
 
-      this.navigationObserver.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-      });
+      if (document.documentElement) {
+        this.navigationObserver.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+      }
     }
 
     removeNavigationHooks() {
       window.removeEventListener("yt-navigate-finish", this.handleNavigation);
 
       window.removeEventListener("popstate", this.handleNavigation);
+
+      window.removeEventListener("pagehide", this.handlePageHide);
 
       document.removeEventListener("visibilitychange", this.handleVisibility);
 
@@ -398,7 +541,7 @@
     }
 
     /* ======================================
-       TAB VISIBILITY
+       VISIBILITY
     ====================================== */
 
     handleVisibility() {
@@ -411,6 +554,15 @@
         event: "visibilitychange",
         state: this.getPlaybackState(video),
         isPlaying: this.isPlaying(video),
+        isPaused: video.paused,
+        isHidden: document.hidden,
+      });
+    }
+
+    handlePageHide() {
+      this.emit("pageHidden", {
+        video: this.currentVideo,
+        url: location.href,
       });
     }
 
@@ -419,7 +571,9 @@
     ====================================== */
 
     scan() {
-      if (!this.running) return;
+      if (!this.running || this.destroyed) {
+        return;
+      }
 
       const detectedVideo = this.findVideo();
 
@@ -432,10 +586,18 @@
       }
 
       if (this.currentVideo) {
+        this.checkVideoSource();
+
+        const video = this.currentVideo;
+
         this.emit("playbackCheck", {
-          video: this.currentVideo,
-          state: this.getPlaybackState(),
-          isPlaying: this.isPlaying(),
+          video,
+          hasVideo: true,
+          isPlaying: this.isPlaying(video),
+          isPaused: video.paused,
+          isEnded: video.ended,
+          frameReady: this.isFrameReady(video),
+          state: this.getPlaybackState(video),
         });
       }
     }
@@ -463,15 +625,19 @@
       this.running = true;
       this.lastUrl = location.href;
 
-      this.observer = new MutationObserver(this.handleMutations);
+      if (document.documentElement) {
+        this.observer = new MutationObserver(this.handleMutations);
 
-      this.observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-      });
+        this.observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+      }
 
       this.installNavigationHooks();
 
+      // Detect a video that was already playing
+      // before the extension initialized.
       this.scan();
 
       this.intervalTimer = setInterval(() => {
@@ -507,16 +673,39 @@
     }
 
     /* ======================================
-       STATE
+       STATUS
     ====================================== */
 
     getState() {
+      const video = this.currentVideo;
+
+      const hasVideo = this.isValidVideo(video);
+
+      const isPlaying = hasVideo ? this.isPlaying(video) : false;
+
       return {
         running: this.running,
-        video: this.currentVideo,
-        currentVideo: this.currentVideo,
-        isPlaying: this.isPlaying(),
-        playbackState: this.getPlaybackState(),
+        hasVideo,
+        video,
+        currentVideo: video,
+
+        isPlaying,
+        isPaused: hasVideo ? video.paused : false,
+        isEnded: hasVideo ? video.ended : false,
+
+        frameReady: hasVideo ? this.isFrameReady(video) : false,
+
+        playbackState: this.getPlaybackState(video),
+
+        source: hasVideo ? this.getVideoSource(video) : "",
+
+        currentTime: hasVideo ? video.currentTime : 0,
+
+        duration: hasVideo ? video.duration : 0,
+
+        readyState: hasVideo ? video.readyState : 0,
+
+        hidden: document.hidden,
         url: location.href,
       };
     }
@@ -526,14 +715,22 @@
     ====================================== */
 
     destroy() {
+      if (this.destroyed) return;
+
       this.stop();
 
       this.events.clear();
 
       this.destroyed = true;
+
+      console.info("[Ambient Flow] Video detector destroyed.");
     }
   }
 
   AF.VideoDetector = VideoDetector;
-  AF.videoDetector = new VideoDetector();
+
+  // Avoid accidentally creating multiple instances.
+  if (!AF.videoDetector) {
+    AF.videoDetector = new VideoDetector();
+  }
 })();

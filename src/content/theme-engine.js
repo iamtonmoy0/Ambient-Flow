@@ -1,400 +1,474 @@
-/* ==========================================
-   YOUTUBE AMBIENT FLOW
-   Dynamic Theme Engine
-========================================== */
+/**
+ * YouTube Ambient Flow
+ * Theme Engine
+ *
+ * Connects palette generation, gradient generation,
+ * and YouTube page styling.
+ */
 
 (() => {
   "use strict";
 
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
+  const STYLE_ID = "ambient-flow-theme-generated";
+
+  const ROOT_VARIABLES = [
+    "--af-primary",
+    "--af-secondary",
+    "--af-tertiary",
+    "--af-background",
+    "--af-surface",
+    "--af-text",
+    "--af-muted",
+    "--af-border",
+    "--af-accent",
+    "--af-glow",
+    "--af-gradient",
+  ];
+
   class ThemeEngine {
     constructor() {
-      this.root = document.documentElement;
+      this.paletteEngine = AF.paletteEngine || null;
+      this.gradientEngine = AF.gradientEngine || null;
+      this.colorEngine = AF.colorEngine || null;
 
-      this.styleId = "ambient-flow-theme";
-
-      this.styleElement = null;
-
-      this.enabled = false;
-      this.frozen = false;
-      this.frozenColor = null;
-
-      this.currentColor = null;
       this.currentPalette = null;
+      this.currentColor = null;
+      this.currentGradient = null;
+
+      this.settings = {
+        enabled: true,
+        ambientGlow: true,
+        glowIntensity: 0.65,
+        smoothTransitions: true,
+        gradientType: "ambient",
+        transitionDuration: 500,
+      };
+
+      this.isActive = false;
+      this.isFrozen = false;
+      this.frozenColor = null;
+      this.destroyed = false;
 
       this.originalVariables = new Map();
       this.originalAttributes = new Map();
 
-      this.variables = [
-        "--af-primary",
-        "--af-secondary",
-        "--af-tertiary",
-        "--af-background",
-        "--af-text",
-        "--af-surface",
-        "--af-glow",
-        "--af-intensity",
-        "--af-blur",
-        "--af-transition",
-      ];
-
-      this.attributes = ["data-af-enabled", "data-af-performance"];
+      this.styleElement = null;
 
       this.captureOriginalState();
     }
 
-    /* ======================================
-       ORIGINAL PAGE STATE
-    ====================================== */
-
     captureOriginalState() {
-      for (const variable of this.variables) {
+      if (!document.documentElement) return;
+
+      const root = document.documentElement;
+
+      ROOT_VARIABLES.forEach((variable) => {
         this.originalVariables.set(
           variable,
-          this.root.style.getPropertyValue(variable),
+          root.style.getPropertyValue(variable),
         );
-      }
+      });
 
-      for (const attribute of this.attributes) {
-        this.originalAttributes.set(
-          attribute,
-          this.root.getAttribute(attribute),
-        );
-      }
+      ["data-af-enabled", "data-af-theme", "data-af-gradient"].forEach(
+        (attribute) => {
+          this.originalAttributes.set(attribute, root.getAttribute(attribute));
+        },
+      );
     }
-
-    restoreOriginalState() {
-      for (const variable of this.variables) {
-        const original = this.originalVariables.get(variable);
-
-        if (original) {
-          this.root.style.setProperty(variable, original);
-        } else {
-          this.root.style.removeProperty(variable);
-        }
-      }
-
-      for (const attribute of this.attributes) {
-        const original = this.originalAttributes.get(attribute);
-
-        if (original === null || original === undefined) {
-          this.root.removeAttribute(attribute);
-        } else {
-          this.root.setAttribute(attribute, original);
-        }
-      }
-    }
-
-    /* ======================================
-       STYLE ELEMENT
-    ====================================== */
 
     ensureStyleElement() {
-      if (this.styleElement && this.styleElement.isConnected) {
+      if (this.styleElement?.isConnected) {
         return this.styleElement;
       }
 
-      let element = document.getElementById(this.styleId);
+      let style = document.getElementById(STYLE_ID);
 
-      if (!element) {
-        element = document.createElement("style");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = this.getGeneratedCSS();
 
-        element.id = this.styleId;
-
-        element.setAttribute("data-af-generated", "true");
-
-        (document.head || document.documentElement).appendChild(element);
+        (document.head || document.documentElement).appendChild(style);
       }
 
-      this.styleElement = element;
+      this.styleElement = style;
 
-      return element;
+      return style;
     }
 
-    /* ======================================
-       COLOR VALIDATION
-    ====================================== */
-
-    validateColor(color) {
-      return typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color);
-    }
-
-    /* ======================================
-       PALETTE GENERATION
-    ====================================== */
-
-    generatePalette(color, settings = {}) {
-      if (AF.paletteEngine?.generate) {
-        try {
-          const generated = AF.paletteEngine.generate(color, settings);
-
-          if (generated) {
-            return generated;
-          }
-        } catch (error) {
-          console.warn("[Ambient Flow] Palette engine failed:", error);
-        }
-      }
-
-      // Safe fallback if PaletteEngine is unavailable.
-      return {
-        primary: color,
-        secondary: color,
-        tertiary: color,
-        background: "#10151f",
-        surface: "#192331",
-        text: "#f4f7fc",
-        glow: color,
-      };
-    }
-
-    /* ======================================
-       APPLY THEME
-    ====================================== */
-
-    apply(color, settings = {}) {
-      if (!this.validateColor(color)) {
-        return false;
-      }
-
-      const effectiveColor =
-        this.frozen && this.frozenColor ? this.frozenColor : color;
-
-      const palette = this.generatePalette(effectiveColor, settings);
-
-      return this.applyPalette(palette, settings, effectiveColor);
-    }
-
-    applyPalette(palette, settings = {}, sourceColor = null) {
-      if (!palette || typeof palette !== "object") {
-        return false;
-      }
-
-      /*
-       * Frozen color is handled here without calling
-       * apply() recursively.
-       */
-      if (this.frozen && this.frozenColor && sourceColor !== this.frozenColor) {
-        palette = this.generatePalette(this.frozenColor, settings);
-
-        sourceColor = this.frozenColor;
-      }
-
-      const primary =
-        palette.primary || palette.dominant || sourceColor || "#243b55";
-
-      const secondary = palette.secondary || primary;
-
-      const tertiary = palette.tertiary || secondary;
-
-      const background = palette.background || "#10151f";
-
-      const surface = palette.surface || "#192331";
-
-      const text = palette.text || "#f4f7fc";
-
-      const glow = palette.glow || primary;
-
-      const intensity =
-        Math.max(0, Math.min(100, Number(settings.intensity ?? 45))) / 100;
-
-      const blur = Math.max(0, Math.min(100, Number(settings.blur ?? 54)));
-
-      const transition = Math.max(
-        0,
-        Math.min(5000, Number(settings.transitionDuration ?? 400)),
-      );
-
-      this.root.style.setProperty("--af-primary", primary);
-
-      this.root.style.setProperty("--af-secondary", secondary);
-
-      this.root.style.setProperty("--af-tertiary", tertiary);
-
-      this.root.style.setProperty("--af-background", background);
-
-      this.root.style.setProperty("--af-surface", surface);
-
-      this.root.style.setProperty("--af-text", text);
-
-      this.root.style.setProperty("--af-glow", glow);
-
-      this.root.style.setProperty("--af-intensity", String(intensity));
-
-      this.root.style.setProperty("--af-blur", `${blur}px`);
-
-      this.root.style.setProperty("--af-transition", `${transition}ms`);
-
-      this.root.setAttribute("data-af-enabled", "true");
-
-      if (settings.performanceMode) {
-        this.root.setAttribute("data-af-performance", settings.performanceMode);
-      } else {
-        this.root.removeAttribute("data-af-performance");
-      }
-
-      this.updateGeneratedStyles(settings, palette);
-
-      this.currentColor = sourceColor || primary;
-      this.currentPalette = palette;
-      this.enabled = true;
-
-      return true;
-    }
-
-    /* ======================================
-       GENERATED PAGE STYLES
-    ====================================== */
-
-    updateGeneratedStyles(settings, palette) {
-      const element = this.ensureStyleElement();
-
-      const backgroundStyle = settings.backgroundStyle || "gradient";
-
-      let backgroundRule = "";
-
-      if (backgroundStyle === "gradient") {
-        backgroundRule = `
-          background-image:
-            linear-gradient(
-              135deg,
-              var(--af-background),
-              var(--af-tertiary)
-            ) !important;
-        `;
-      } else if (backgroundStyle === "solid") {
-        backgroundRule = `
-          background-image: none !important;
-          background-color: var(--af-background) !important;
-        `;
-      } else {
-        backgroundRule = `
-          background-image: none !important;
-          background-color: transparent !important;
-        `;
-      }
-
-      element.textContent = `
-        html[data-af-enabled="true"] body,
-        html[data-af-enabled="true"] ytd-app {
-          ${backgroundRule}
-        }
-
-        html[data-af-enabled="true"] #masthead-container,
-        html[data-af-enabled="true"] ytd-masthead {
-          background-color: var(--af-background) !important;
-        }
-
-        html[data-af-enabled="true"] #guide,
-        html[data-af-enabled="true"] #guide-content,
-        html[data-af-enabled="true"] ytd-mini-guide-renderer {
-          background-color: var(--af-background) !important;
-        }
-
-        html[data-af-enabled="true"] #secondary,
-        html[data-af-enabled="true"] #related,
-        html[data-af-enabled="true"] #comments {
-          background-color: transparent !important;
-        }
-
-        html[data-af-enabled="true"] tp-yt-paper-dialog,
-        html[data-af-enabled="true"] ytd-popup-container {
-          background-color: var(--af-surface) !important;
-        }
-
+    getGeneratedCSS() {
+      return `
         html[data-af-enabled="true"] {
-          color-scheme: dark;
+          --af-transition-duration: 500ms;
+        }
+
+        html[data-af-enabled="true"] body {
+          background-color: var(--af-background) !important;
+          transition:
+            background-color var(--af-transition-duration) ease,
+            color var(--af-transition-duration) ease;
+        }
+
+        html[data-af-enabled="true"] ytd-app {
+          background: transparent !important;
+        }
+
+        html[data-af-enabled="true"] #content,
+        html[data-af-enabled="true"] #page-manager {
+          background: transparent !important;
+        }
+
+        html[data-af-enabled="true"] #primary,
+        html[data-af-enabled="true"] #secondary {
+          background: transparent !important;
+        }
+
+        html[data-af-enabled="true"] ytd-rich-grid-renderer,
+        html[data-af-enabled="true"] ytd-watch-flexy,
+        html[data-af-enabled="true"] ytd-browse,
+        html[data-af-enabled="true"] ytd-search {
+          background: transparent !important;
+        }
+
+        html[data-af-enabled="true"] #ambient-flow-theme-background {
+          position: fixed;
+          inset: 0;
+          z-index: -1;
+          pointer-events: none;
+          background: var(--af-gradient);
+          opacity: 1;
+          transition:
+            opacity var(--af-transition-duration) ease,
+            background var(--af-transition-duration) ease;
+        }
+
+        html:not([data-af-enabled="true"])
+          #ambient-flow-theme-background {
+          display: none !important;
         }
       `;
     }
 
-    /* ======================================
-       FREEZE COLOR
-    ====================================== */
+    ensureBackgroundElement() {
+      let element = document.getElementById("ambient-flow-theme-background");
 
-    freeze(color) {
-      if (!this.validateColor(color)) {
-        return false;
+      if (!element) {
+        element = document.createElement("div");
+        element.id = "ambient-flow-theme-background";
+        element.setAttribute("aria-hidden", "true");
+
+        document.body?.prepend(element);
       }
 
-      this.frozen = true;
-      this.frozenColor = color;
-
-      return true;
+      return element;
     }
 
-    unfreeze() {
-      this.frozen = false;
-      this.frozenColor = null;
+    normalizeColor(color) {
+      if (typeof color === "string") {
+        return this.colorEngine?.hexToRgb?.(color) || this.parseColor(color);
+      }
 
-      return true;
+      if (
+        color &&
+        Number.isFinite(Number(color.r)) &&
+        Number.isFinite(Number(color.g)) &&
+        Number.isFinite(Number(color.b))
+      ) {
+        return {
+          r: Math.max(0, Math.min(255, Number(color.r))),
+          g: Math.max(0, Math.min(255, Number(color.g))),
+          b: Math.max(0, Math.min(255, Number(color.b))),
+        };
+      }
+
+      return null;
     }
 
-    /* ======================================
-       FREEZE STATE
-    ====================================== */
+    parseColor(value) {
+      if (typeof value !== "string") return null;
 
-    isFrozen() {
-      return this.frozen;
-    }
+      const match = value.match(
+        /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/,
+      );
 
-    getFrozenColor() {
-      return this.frozenColor;
-    }
+      if (!match) return null;
 
-    /* ======================================
-       THEME STATE
-    ====================================== */
-
-    getStatus() {
       return {
-        enabled: this.enabled,
-        frozen: this.frozen,
-        frozenColor: this.frozenColor,
-        currentColor: this.currentColor,
-        currentPalette: this.currentPalette,
+        r: Number(match[1]),
+        g: Number(match[2]),
+        b: Number(match[3]),
       };
     }
 
-    /* ======================================
-       RESET
-    ====================================== */
-
-    reset() {
-      if (this.styleElement?.isConnected) {
-        this.styleElement.remove();
+    colorToCSS(color, fallback = "#202020") {
+      if (typeof color === "string") {
+        return color;
       }
 
-      this.styleElement = null;
+      const rgb = this.normalizeColor(color);
 
-      this.restoreOriginalState();
+      if (!rgb) return fallback;
 
-      this.currentColor = null;
-      this.currentPalette = null;
-
-      this.enabled = false;
-
-      /*
-       * Do not clear frozen state here.
-       * A frozen color should survive a pause
-       * and be available when playback resumes.
-       */
+      return `rgb(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)})`;
     }
 
-    /* ======================================
-       CLEANUP
-    ====================================== */
+    getPalette(color) {
+      if (this.paletteEngine?.createPalette) {
+        try {
+          return this.paletteEngine.createPalette(color, this.settings);
+        } catch (error) {
+          console.warn("[AmbientFlow] Palette generation failed:", error);
+        }
+      }
+
+      const normalized = this.normalizeColor(color);
+
+      if (!normalized) return null;
+
+      const hex = this.colorEngine?.rgbToHex?.(normalized) || "#202020";
+
+      return {
+        primary: hex,
+        secondary: "#181818",
+        tertiary: "#242424",
+        background: "#101010",
+        surface: "#202020",
+        text: "#ffffff",
+        muted: "#aaaaaa",
+        border: "#333333",
+        accent: hex,
+        glow: hex,
+        raw: normalized,
+      };
+    }
+
+    getGradient(color, palette) {
+      if (this.gradientEngine?.create) {
+        try {
+          return this.gradientEngine.create(color, {
+            type: this.settings.gradientType,
+            intensity: this.settings.glowIntensity,
+          });
+        } catch (error) {
+          console.warn("[AmbientFlow] Gradient generation failed:", error);
+        }
+      }
+
+      const primary = this.colorToCSS(palette?.primary, "#202020");
+
+      return `
+        radial-gradient(
+          ellipse at 50% 0%,
+          ${primary}55 0%,
+          transparent 70%
+        )
+      `;
+    }
+
+    applyPalette(palette, gradient) {
+      if (!palette || !document.documentElement) {
+        return false;
+      }
+
+      const root = document.documentElement;
+
+      const variables = {
+        "--af-primary": palette.primary,
+        "--af-secondary": palette.secondary,
+        "--af-tertiary": palette.tertiary,
+        "--af-background": palette.background,
+        "--af-surface": palette.surface,
+        "--af-text": palette.text,
+        "--af-muted": palette.muted,
+        "--af-border": palette.border,
+        "--af-accent": palette.accent,
+        "--af-glow": palette.glow,
+        "--af-gradient": gradient,
+      };
+
+      Object.entries(variables).forEach(([name, value]) => {
+        if (value === undefined || value === null) return;
+
+        root.style.setProperty(name, String(value));
+      });
+
+      const duration = this.settings.smoothTransitions
+        ? this.settings.transitionDuration
+        : 0;
+
+      root.style.setProperty("--af-transition-duration", `${duration}ms`);
+
+      root.setAttribute("data-af-enabled", "true");
+      root.setAttribute("data-af-theme", "ambient");
+      root.setAttribute("data-af-gradient", this.settings.gradientType);
+
+      this.ensureStyleElement();
+      this.ensureBackgroundElement();
+
+      return true;
+    }
+
+    applyColor(color, options = {}) {
+      if (this.destroyed || !this.settings.enabled || this.isFrozen) {
+        return false;
+      }
+
+      const normalized = this.normalizeColor(color);
+
+      if (!normalized) {
+        console.warn("[AmbientFlow] Invalid color received:", color);
+
+        return false;
+      }
+
+      const palette = this.getPalette(normalized);
+
+      if (!palette) return false;
+
+      const gradient = this.getGradient(normalized, palette);
+
+      if (!gradient) return false;
+
+      const applied = this.applyPalette(palette, gradient);
+
+      if (!applied) return false;
+
+      this.currentColor = normalized;
+      this.currentPalette = palette;
+      this.currentGradient = gradient;
+      this.isActive = true;
+
+      if (options.sceneChanged) {
+        this.emitSceneUpdate(palette);
+      }
+
+      return true;
+    }
+
+    apply(color, options = {}) {
+      return this.applyColor(color, options);
+    }
+
+    emitSceneUpdate(palette) {
+      document.dispatchEvent(
+        new CustomEvent("ambient-flow:scene-changed", {
+          detail: {
+            palette,
+          },
+        }),
+      );
+    }
+
+    setSettings(settings = {}) {
+      if (!settings || typeof settings !== "object") {
+        return false;
+      }
+
+      this.settings = {
+        ...this.settings,
+        ...settings,
+      };
+
+      if (this.currentColor && !this.isFrozen && this.settings.enabled) {
+        this.applyColor(this.currentColor);
+      }
+
+      return true;
+    }
+
+    setEnabled(enabled) {
+      this.settings.enabled = Boolean(enabled);
+
+      if (!this.settings.enabled) {
+        this.reset();
+      } else if (this.currentColor && !this.isFrozen) {
+        this.applyColor(this.currentColor);
+      }
+    }
+
+    freeze(color) {
+      this.isFrozen = true;
+
+      if (color) {
+        this.frozenColor = color;
+
+        const normalized = this.normalizeColor(color);
+
+        if (normalized) {
+          const previous = this.isFrozen;
+
+          this.isFrozen = false;
+          this.applyColor(normalized);
+          this.isFrozen = previous;
+        }
+      }
+    }
+
+    unfreeze() {
+      this.isFrozen = false;
+      this.frozenColor = null;
+    }
+
+    reset() {
+      if (!document.documentElement) return;
+
+      const root = document.documentElement;
+
+      ROOT_VARIABLES.forEach((variable) => {
+        const original = this.originalVariables.get(variable);
+
+        if (original) {
+          root.style.setProperty(variable, original);
+        } else {
+          root.style.removeProperty(variable);
+        }
+      });
+
+      this.originalAttributes.forEach((value, attribute) => {
+        if (value === null) {
+          root.removeAttribute(attribute);
+        } else {
+          root.setAttribute(attribute, value);
+        }
+      });
+
+      document.getElementById("ambient-flow-theme-background")?.remove();
+
+      this.currentPalette = null;
+      this.currentColor = null;
+      this.currentGradient = null;
+      this.isActive = false;
+
+      this.paletteEngine?.reset?.();
+      this.gradientEngine?.reset?.();
+    }
+
+    getStatus() {
+      return {
+        active: this.isActive,
+        frozen: this.isFrozen,
+        enabled: this.settings.enabled,
+        color: this.currentColor,
+        palette: this.currentPalette,
+        gradient: this.currentGradient,
+      };
+    }
 
     destroy() {
+      if (this.destroyed) return;
+
       this.reset();
 
-      this.unfreeze();
+      this.styleElement?.remove();
+      this.styleElement = null;
 
-      this.enabled = false;
+      this.destroyed = true;
     }
   }
 
   AF.ThemeEngine = ThemeEngine;
-  AF.themeEngine = new ThemeEngine();
+
+  AF.themeEngine = AF.themeEngine || new ThemeEngine();
 })();

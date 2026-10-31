@@ -1,6 +1,9 @@
 /**
  * YouTube Ambient Flow
- * Main Content Script Controller
+ * Main Content Controller
+ *
+ * Coordinates the extension's content-side modules,
+ * settings, focus mode, and runtime messages.
  */
 
 (() => {
@@ -8,415 +11,580 @@
 
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
+  const MESSAGE_TYPES = {
+    GET_STATUS: "GET_STATUS",
+    GET_SETTINGS: "GET_SETTINGS",
+    UPDATE_SETTINGS: "UPDATE_SETTINGS",
+    TOGGLE_AMBIENT_FLOW: "TOGGLE_AMBIENT_FLOW",
+    TOGGLE_FOCUS_MODE: "TOGGLE_FOCUS_MODE",
+    UPDATE_FOCUS_SETTINGS: "UPDATE_FOCUS_SETTINGS",
+    FREEZE_BACKGROUND: "FREEZE_BACKGROUND",
+    SET_CUSTOM_COLOR: "SET_CUSTOM_COLOR",
+    RESET_THEME: "RESET_THEME",
+  };
+
+  const DEFAULT_FOCUS_SETTINGS = {
+    hideSidebar: false,
+    hideComments: false,
+    hideRecommendations: false,
+    hideChat: false,
+    hideHeader: false,
+    hideShortsControls: false,
+  };
+
   class AmbientFlowController {
     constructor() {
-      this.initialized = false;
-      this.messageListener = null;
-      this.boundKeyHandler = this.handleKeyboard.bind(this);
-      this.boundPageHide = this.handlePageHide.bind(this);
+      this.analyzer = AF.videoAnalyzer || null;
+      this.focusMode = AF.focusMode || null;
+      this.storage = AF.storage || null;
 
+      this.initialized = false;
+      this.destroyed = false;
+
+      this.settings = {};
       this.focusSettings = {
-        hideSidebar: true,
-        hideComments: false,
-        hideRecommendations: false,
-        hideChat: true,
-        hideHeader: false,
-        hideShortsSidebar: false,
+        ...DEFAULT_FOCUS_SETTINGS,
       };
+
+      this.boundMessageHandler = this.handleRuntimeMessage.bind(this);
+
+      this.boundKeyHandler = this.handleKeyboardShortcut.bind(this);
+
+      this.boundPageHideHandler = this.handlePageHide.bind(this);
+
+      this.unsubscribers = [];
     }
 
     async init() {
-      if (this.initialized) return;
+      if (this.initialized || this.destroyed) return;
 
       this.initialized = true;
 
       this.registerMessageListener();
+      this.registerKeyboardShortcuts();
+      this.registerPageLifecycle();
 
-      window.addEventListener("keydown", this.boundKeyHandler);
+      await this.loadSettings();
 
-      window.addEventListener("pagehide", this.boundPageHide);
-
-      try {
-        await AF.videoAnalyzer?.start?.();
-
-        const settings = await this.getSettings();
-
-        if (settings.focusModeEnabled) {
-          AF.focusMode?.enable?.(this.focusSettings);
-        }
-
-        console.info("[Ambient Flow] Controller initialized.");
-      } catch (error) {
-        console.error("[Ambient Flow] Initialization failed:", error);
+      if (this.focusSettings.enabled) {
+        this.focusMode?.enable?.(this.focusSettings);
       }
+
+      await this.analyzer?.start?.();
+
+      this.emitReady();
+
+      console.info("[AmbientFlow] Initialized.");
     }
 
     registerMessageListener() {
-      if (typeof chrome === "undefined" || !chrome.runtime?.onMessage) {
-        return;
-      }
+      if (!chrome?.runtime?.onMessage) return;
 
-      this.messageListener = (message, sender, sendResponse) => {
-        if (!message?.type) return false;
-
-        this.handleMessage(message)
-          .then((response) => {
-            sendResponse({
-              success: true,
-              ...response,
-            });
-          })
-          .catch((error) => {
-            console.error("[Ambient Flow] Message handling failed:", error);
-
-            sendResponse({
-              success: false,
-              error: error.message || "Operation failed",
-            });
-          });
-
-        // Keep the message channel open for the asynchronous response.
-        return true;
-      };
-
-      chrome.runtime.onMessage.addListener(this.messageListener);
+      chrome.runtime.onMessage.addListener(this.boundMessageHandler);
     }
 
-    async handleMessage(message) {
-      switch (message.type) {
-        case "GET_STATUS":
-          return this.getStatus();
-
-        case "GET_SETTINGS":
-          return {
-            settings: await this.getSettings(),
-          };
-
-        case "UPDATE_SETTINGS":
-          return this.updateSettings(message.settings || {});
-
-        case "TOGGLE_AMBIENT_FLOW":
-          return this.toggleAmbientFlow(message.enabled);
-
-        case "TOGGLE_FOCUS_MODE":
-          return this.toggleFocusMode(message.enabled);
-
-        case "UPDATE_FOCUS_SETTINGS":
-          return this.updateFocusSettings(message.settings || {});
-
-        case "FREEZE_BACKGROUND":
-          return this.freezeBackground(message);
-
-        case "SET_CUSTOM_COLOR":
-          return this.setCustomColor(message.color);
-
-        case "RESET_THEME":
-          return this.resetTheme();
-
-        default:
-          throw new Error(`Unknown message type: ${message.type}`);
-      }
+    registerKeyboardShortcuts() {
+      document.addEventListener("keydown", this.boundKeyHandler);
     }
 
-    async getSettings() {
-      const defaults = AF.DEFAULT_SETTINGS || {};
+    registerPageLifecycle() {
+      window.addEventListener("pagehide", this.boundPageHideHandler);
+    }
 
+    emitReady() {
+      this.sendRuntimeMessage({
+        type: "AMBIENT_FLOW_READY",
+      });
+    }
+
+    async loadSettings() {
       try {
-        const stored = await AF.storage?.getAll?.();
+        let stored = {};
 
-        return {
-          ...defaults,
-          ...(stored || {}),
-        };
-      } catch (error) {
-        console.warn("[Ambient Flow] Could not retrieve settings:", error);
-
-        return { ...defaults };
-      }
-    }
-
-    async updateSettings(newSettings) {
-      if (
-        !newSettings ||
-        typeof newSettings !== "object" ||
-        Array.isArray(newSettings)
-      ) {
-        throw new Error("Invalid settings object.");
-      }
-
-      let sanitized = newSettings;
-
-      if (AF.settings?.validate) {
-        const validation = AF.settings.validate(newSettings);
-
-        if (!validation.valid) {
-          throw new Error(
-            validation.errors?.join(", ") || "Settings validation failed.",
-          );
+        if (this.storage?.getAll) {
+          stored = await this.storage.getAll();
+        } else if (this.storage?.get) {
+          stored = await this.storage.get();
         }
 
-        sanitized = validation.settings;
-      }
+        this.settings = {
+          ...(stored || {}),
+        };
 
-      if (!AF.storage?.set) {
+        this.focusSettings = {
+          ...DEFAULT_FOCUS_SETTINGS,
+          ...this.settings,
+          enabled: Boolean(this.settings.focusModeEnabled),
+        };
+
+        this.focusMode?.updateSettings?.(this.focusSettings);
+
+        return this.settings;
+      } catch (error) {
+        console.error("[AmbientFlow] Settings load failed:", error);
+
+        this.settings = {};
+        this.focusSettings = {
+          ...DEFAULT_FOCUS_SETTINGS,
+          enabled: false,
+        };
+
+        return this.settings;
+      }
+    }
+
+    async saveSettings(updates) {
+      if (!this.storage?.set) {
         throw new Error("Storage manager is unavailable.");
       }
 
-      await AF.storage.set(sanitized);
+      await this.storage.set(updates);
 
-      await AF.videoAnalyzer?.handleSettingsChange?.(await this.getSettings());
+      this.settings = {
+        ...this.settings,
+        ...updates,
+      };
+
+      return this.settings;
+    }
+
+    validateSettingsUpdate(updates) {
+      if (!updates || typeof updates !== "object" || Array.isArray(updates)) {
+        return {
+          valid: false,
+          errors: ["Settings must be an object."],
+        };
+      }
+
+      if (!AF.settings?.validate) {
+        return {
+          valid: true,
+          settings: {
+            ...this.settings,
+            ...updates,
+          },
+        };
+      }
+
+      // Validate the merged settings, not just the partial update.
+      const merged = {
+        ...this.settings,
+        ...updates,
+      };
+
+      const result = AF.settings.validate(merged);
+
+      if (!result?.valid) {
+        return {
+          valid: false,
+          errors: result?.errors || ["Invalid settings."],
+        };
+      }
 
       return {
-        message: "Settings updated.",
-        settings: await this.getSettings(),
+        valid: true,
+        settings: result.settings || merged,
       };
+    }
+
+    async updateSettings(updates = {}) {
+      const validation = this.validateSettingsUpdate(updates);
+
+      if (!validation.valid) {
+        return {
+          success: false,
+          errors: validation.errors,
+        };
+      }
+
+      try {
+        const validated = validation.settings;
+
+        await this.saveSettings(validated);
+
+        await this.analyzer?.handleSettingsChange?.(validated);
+
+        this.focusSettings = {
+          ...this.focusSettings,
+          ...validated,
+          enabled: Boolean(validated.focusModeEnabled),
+        };
+
+        if (validated.focusModeEnabled) {
+          this.focusMode?.enable?.(this.focusSettings);
+        } else {
+          this.focusMode?.disable?.();
+        }
+
+        return {
+          success: true,
+          settings: this.settings,
+        };
+      } catch (error) {
+        console.error("[AmbientFlow] Settings update failed:", error);
+
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
     }
 
     async toggleAmbientFlow(enabled) {
-      const current = await this.getSettings();
-
-      const nextEnabled =
-        typeof enabled === "boolean" ? enabled : !current.enabled;
-
-      await AF.storage?.set?.({
-        enabled: nextEnabled,
-      });
-
-      AF.videoAnalyzer?.setEnabled?.(nextEnabled);
-
-      if (!nextEnabled) {
-        AF.videoAnalyzer?.stopSampling?.();
-        AF.ambientGlow?.hide?.();
-        AF.themeEngine?.reset?.();
-      }
-
-      return {
-        enabled: nextEnabled,
-      };
-    }
-
-    async toggleFocusMode(enabled) {
-      const current = await this.getSettings();
-
       const nextEnabled =
         typeof enabled === "boolean"
           ? enabled
-          : !Boolean(current.focusModeEnabled);
+          : !Boolean(this.settings.enabled);
 
-      if (nextEnabled) {
-        AF.focusMode?.enable?.(this.focusSettings);
-      } else {
-        AF.focusMode?.disable?.();
+      try {
+        await this.saveSettings({
+          enabled: nextEnabled,
+        });
+
+        this.analyzer?.setEnabled?.(nextEnabled);
+
+        return {
+          success: true,
+          enabled: nextEnabled,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error.message,
+        };
       }
-
-      await AF.storage?.set?.({
-        focusModeEnabled: nextEnabled,
-      });
-
-      return {
-        focusModeEnabled: nextEnabled,
-        focusMode: AF.focusMode?.getStatus?.(),
-      };
     }
 
-    updateFocusSettings(settings) {
-      if (
-        !settings ||
-        typeof settings !== "object" ||
-        Array.isArray(settings)
-      ) {
-        throw new Error("Invalid Focus Mode settings.");
-      }
+    async toggleFocusMode(enabled) {
+      const nextEnabled =
+        typeof enabled === "boolean" ? enabled : !this.focusSettings.enabled;
 
-      const allowedKeys = Object.keys(this.focusSettings);
-
-      for (const [key, value] of Object.entries(settings)) {
-        if (!allowedKeys.includes(key)) continue;
-
-        this.focusSettings[key] = Boolean(value);
-      }
-
-      AF.focusMode?.updateSettings?.(this.focusSettings);
-
-      return {
-        focusMode: AF.focusMode?.getStatus?.(),
+      this.focusSettings = {
+        ...this.focusSettings,
+        enabled: nextEnabled,
       };
-    }
 
-    async freezeBackground(message) {
-      const current = await this.getSettings();
+      try {
+        await this.saveSettings({
+          focusModeEnabled: nextEnabled,
+        });
 
-      const frozen =
-        typeof message.frozen === "boolean"
-          ? message.frozen
-          : !Boolean(current.frozen);
-
-      const color = message.color || current.frozenColor || null;
-
-      await AF.storage?.set?.({
-        frozen,
-        frozenColor: frozen ? color : null,
-      });
-
-      if (frozen && color) {
-        AF.themeEngine?.freeze?.(color);
-
-        const rgb = this.hexToRgb(color);
-
-        if (rgb && AF.videoAnalyzer?.isPlaying) {
-          AF.videoAnalyzer.applyColor(rgb);
+        if (nextEnabled) {
+          this.focusMode?.enable?.(this.focusSettings);
+        } else {
+          this.focusMode?.disable?.();
         }
-      } else {
-        AF.themeEngine?.unfreeze?.();
+
+        return {
+          success: true,
+          enabled: nextEnabled,
+          settings: this.focusSettings,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    }
+
+    async updateFocusSettings(updates = {}) {
+      if (!updates || typeof updates !== "object" || Array.isArray(updates)) {
+        return {
+          success: false,
+          error: "Invalid focus settings.",
+        };
       }
 
-      await AF.videoAnalyzer?.handleSettingsChange?.(await this.getSettings());
+      const allowedKeys = Object.keys(DEFAULT_FOCUS_SETTINGS);
 
-      return {
-        frozen,
-        frozenColor: frozen ? color : null,
+      const safeUpdates = {};
+
+      for (const key of allowedKeys) {
+        if (typeof updates[key] === "boolean") {
+          safeUpdates[key] = updates[key];
+        }
+      }
+
+      this.focusSettings = {
+        ...this.focusSettings,
+        ...safeUpdates,
       };
+
+      try {
+        await this.saveSettings(safeUpdates);
+
+        this.focusMode?.updateSettings?.(this.focusSettings);
+
+        if (this.focusSettings.enabled) {
+          this.focusMode?.enable?.(this.focusSettings);
+        }
+
+        return {
+          success: true,
+          settings: this.focusSettings,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    }
+
+    async freezeBackground(color) {
+      const selectedColor =
+        color ||
+        this.analyzer?.getStatus?.()?.stats?.lastColor ||
+        this.settings.frozenColor ||
+        "#202020";
+
+      try {
+        await this.saveSettings({
+          frozen: true,
+          freezeBackground: true,
+          frozenColor: selectedColor,
+        });
+
+        await this.analyzer?.handleSettingsChange?.({
+          frozen: true,
+          freezeBackground: true,
+          frozenColor: selectedColor,
+        });
+
+        this.analyzer?.freeze?.(selectedColor);
+
+        return {
+          success: true,
+          frozen: true,
+          color: selectedColor,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
     }
 
     async setCustomColor(color) {
-      if (!AF.settings?.isHexColor?.(color)) {
-        throw new Error("Invalid color. Use a valid HEX color.");
+      if (
+        typeof color !== "string" ||
+        !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color)
+      ) {
+        return {
+          success: false,
+          error: "Invalid hex color.",
+        };
       }
 
-      await AF.storage?.set?.({
-        frozen: true,
-        frozenColor: color,
-      });
-
-      AF.themeEngine?.freeze?.(color);
-
-      const rgb = this.hexToRgb(color);
-
-      if (rgb && AF.videoAnalyzer?.isPlaying) {
-        AF.videoAnalyzer.applyColor(rgb);
-      }
-
-      return {
-        frozen: true,
-        color,
-      };
+      return this.freezeBackground(color);
     }
 
     async resetTheme() {
-      AF.videoAnalyzer?.stopSampling?.();
+      try {
+        await this.saveSettings({
+          frozen: false,
+          freezeBackground: false,
+          frozenColor: "#202020",
+        });
 
-      AF.themeEngine?.unfreeze?.();
-      AF.themeEngine?.reset?.();
-      AF.ambientGlow?.hide?.();
+        this.analyzer?.unfreeze?.();
 
-      await AF.storage?.set?.({
-        frozen: false,
-        frozenColor: null,
-      });
+        await this.analyzer?.handleSettingsChange?.({
+          frozen: false,
+          freezeBackground: false,
+          frozenColor: "#202020",
+        });
 
-      AF.videoAnalyzer?.syncPlaybackState?.();
+        this.analyzer?.themeEngine?.reset?.();
+        this.analyzer?.ambientGlow?.reset?.();
 
-      return {
-        message: "Theme reset.",
-      };
+        if (
+          this.analyzer?.video &&
+          !this.analyzer.video.paused &&
+          !this.analyzer.video.ended
+        ) {
+          this.analyzer.syncPlaybackState?.();
+        }
+
+        return {
+          success: true,
+          reset: true,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
     }
 
-    hexToRgb(hex) {
-      if (typeof hex !== "string") return null;
-
-      const match = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
-
-      if (!match) return null;
-
-      return {
-        r: parseInt(match[1], 16),
-        g: parseInt(match[2], 16),
-        b: parseInt(match[3], 16),
-      };
-    }
-
-    async getStatus() {
-      const settings = await this.getSettings();
-
+    getStatus() {
       return {
         initialized: this.initialized,
-        settings,
-        analyzer: AF.videoAnalyzer?.getStatus?.() || null,
-        focusMode: AF.focusMode?.getStatus?.() || null,
-        shorts: AF.shortsSupport?.getStatus?.() || null,
+        destroyed: this.destroyed,
+        settings: this.settings,
+        focusSettings: this.focusSettings,
+        analyzer: this.analyzer?.getStatus?.() || null,
+        focusMode: this.focusMode?.getStatus?.() || null,
+        theme: this.analyzer?.themeEngine?.getStatus?.() || null,
       };
     }
 
-    handleKeyboard(event) {
-      if (!event.altKey || !event.shiftKey) {
+    async handleRuntimeMessage(message, sender, sendResponse) {
+      if (!message || typeof message.type !== "string") {
+        return false;
+      }
+
+      const respond = async () => {
+        switch (message.type) {
+          case MESSAGE_TYPES.GET_STATUS:
+            return {
+              success: true,
+              status: this.getStatus(),
+            };
+
+          case MESSAGE_TYPES.GET_SETTINGS:
+            return {
+              success: true,
+              settings: this.settings,
+            };
+
+          case MESSAGE_TYPES.UPDATE_SETTINGS:
+            return this.updateSettings(message.settings || {});
+
+          case MESSAGE_TYPES.TOGGLE_AMBIENT_FLOW:
+            return this.toggleAmbientFlow(message.enabled);
+
+          case MESSAGE_TYPES.TOGGLE_FOCUS_MODE:
+            return this.toggleFocusMode(message.enabled);
+
+          case MESSAGE_TYPES.UPDATE_FOCUS_SETTINGS:
+            return this.updateFocusSettings(message.settings || {});
+
+          case MESSAGE_TYPES.FREEZE_BACKGROUND:
+            return this.freezeBackground(message.color);
+
+          case MESSAGE_TYPES.SET_CUSTOM_COLOR:
+            return this.setCustomColor(message.color);
+
+          case MESSAGE_TYPES.RESET_THEME:
+            return this.resetTheme();
+
+          default:
+            return {
+              success: false,
+              error: "Unknown message type.",
+            };
+        }
+      };
+
+      respond()
+        .then(sendResponse)
+        .catch((error) => {
+          sendResponse({
+            success: false,
+            error: error.message,
+          });
+        });
+
+      // Keep the message channel open for async responses.
+      return true;
+    }
+
+    handleKeyboardShortcut(event) {
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.metaKey
+      ) {
         return;
       }
 
-      // Alt + Shift + A: Toggle Ambient Flow.
-      if (event.code === "KeyA") {
-        event.preventDefault();
-        this.toggleAmbientFlow();
-      }
+      if (!event.altKey || !event.shiftKey) return;
 
-      // Alt + Shift + F: Toggle Focus Mode.
-      if (event.code === "KeyF") {
-        event.preventDefault();
-        this.toggleFocusMode();
-      }
+      const key = event.key.toLowerCase();
 
-      // Alt + Shift + C: Reset ambient theme.
-      if (event.code === "KeyC") {
-        event.preventDefault();
-        this.resetTheme();
+      switch (key) {
+        case "a":
+          event.preventDefault();
+          this.toggleAmbientFlow();
+          break;
+
+        case "f":
+          event.preventDefault();
+          this.toggleFocusMode();
+          break;
+
+        case "c":
+          event.preventDefault();
+          this.resetTheme();
+          break;
+
+        default:
+          break;
+      }
+    }
+
+    sendRuntimeMessage(message) {
+      if (!chrome?.runtime?.sendMessage) return;
+
+      try {
+        chrome.runtime.sendMessage(message, () => {
+          // Access lastError to avoid unchecked runtime errors.
+          void chrome.runtime.lastError;
+        });
+      } catch (error) {
+        console.warn("[AmbientFlow] Runtime message failed:", error);
       }
     }
 
     handlePageHide() {
-      AF.videoAnalyzer?.stop?.();
-      AF.ambientGlow?.hide?.();
-      AF.themeEngine?.reset?.();
+      this.analyzer?.stop?.();
     }
 
     destroy() {
-      if (!this.initialized) return;
+      if (this.destroyed) return;
+
+      chrome?.runtime?.onMessage?.removeListener(this.boundMessageHandler);
+
+      document.removeEventListener("keydown", this.boundKeyHandler);
+
+      window.removeEventListener("pagehide", this.boundPageHideHandler);
+
+      this.unsubscribers.forEach((unsubscribe) => {
+        try {
+          unsubscribe();
+        } catch {
+          // Ignore cleanup errors.
+        }
+      });
+
+      this.unsubscribers = [];
+
+      this.analyzer?.destroy?.();
+      this.focusMode?.destroy?.();
 
       this.initialized = false;
-
-      window.removeEventListener("keydown", this.boundKeyHandler);
-
-      window.removeEventListener("pagehide", this.boundPageHide);
-
-      if (
-        this.messageListener &&
-        typeof chrome !== "undefined" &&
-        chrome.runtime?.onMessage
-      ) {
-        chrome.runtime.onMessage.removeListener(this.messageListener);
-      }
-
-      AF.videoAnalyzer?.destroy?.();
-      AF.focusMode?.destroy?.();
-
-      this.messageListener = null;
-
-      console.info("[Ambient Flow] Controller destroyed.");
+      this.destroyed = true;
     }
   }
 
   AF.AmbientFlowController = AmbientFlowController;
 
-  AF.controller = AF.controller || new AmbientFlowController();
+  if (!AF.controller) {
+    AF.controller = new AmbientFlowController();
 
-  AF.destroy = () => {
-    AF.controller?.destroy?.();
-  };
-
-  // Start once the document is ready.
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => AF.controller.init(), {
-      once: true,
-    });
-  } else {
-    AF.controller.init();
+    if (document.readyState === "loading") {
+      document.addEventListener(
+        "DOMContentLoaded",
+        () => AF.controller.init(),
+        { once: true },
+      );
+    } else {
+      AF.controller.init();
+    }
   }
 })();
