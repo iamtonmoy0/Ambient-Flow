@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
   "name": "YouTube Ambient Flow",
+  "short_name": "Ambient Flow",
   "version": "1.0.0",
-  "description": "Transform YouTube with dynamic video-inspired backgrounds.",
-  "permissions": [
-    "storage"
-  ],
+  "description": "Transform YouTube with intelligent video-inspired backgrounds, ambient lighting, and cinematic themes.",
+  "permissions": ["storage"],
   "background": {
     "service_worker": "src/background/service-worker.js"
   },
@@ -13,16 +12,56 @@
     "default_title": "YouTube Ambient Flow",
     "default_popup": "src/popup/popup.html"
   },
+  "options_page": "src/options/options.html",
+  "commands": {
+    "toggle-ambient-flow": {
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      },
+      "description": "Toggle Ambient Flow"
+    },
+    "toggle-focus-mode": {
+      "suggested_key": {
+        "default": "Alt+Shift+F"
+      },
+      "description": "Toggle Focus Mode"
+    },
+    "freeze-background": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Freeze Background Color"
+    }
+  },
   "content_scripts": [
     {
-      "matches": [
-        "https://www.youtube.com/*"
-      ],
+      "matches": ["https://www.youtube.com/*"],
       "js": [
+        "src/shared/constants.js",
+        "src/shared/utils.js",
+        "src/shared/storage.js",
+        "src/engines/color-engine.js",
+        "src/engines/gradient-engine.js",
+        "src/engines/palette-engine.js",
+        "src/engines/performance-engine.js",
+        "src/content/video-detector.js",
+        "src/content/frame-sampler.js",
+        "src/content/scene-detector.js",
+        "src/content/color-extractor.js",
+        "src/content/theme-engine.js",
+        "src/content/readability-engine.js",
+        "src/content/ambient-glow.js",
+        "src/content/focus-mode.js",
+        "src/content/shorts-support.js",
+        "src/content/youtube-detector.js",
+        "src/content/video-analyzer.js",
         "src/content/main.js"
       ],
       "css": [
-        "src/styles/ambient.css"
+        "src/styles/ambient.css",
+        "src/styles/youtube-theme.css",
+        "src/styles/focus-mode.css",
+        "src/styles/transitions.css"
       ],
       "run_at": "document_idle"
     }
