@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Ambient Flow",
+  "version": "1.0.0",
+  "description": "Transform YouTube with dynamic video-inspired backgrounds.",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_title": "YouTube Ambient Flow",
+    "default_popup": "src/popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "src/content/main.js"
+      ],
+      "css": [
+        "src/styles/ambient.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
