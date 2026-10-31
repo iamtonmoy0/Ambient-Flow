@@ -1,0 +1,114 @@
+/* ==========================================
+   YOUTUBE AMBIENT FLOW
+   Focus Mode
+========================================== */
+
+/* Hide recommendations */
+
+html.af-focus-mode ytd-watch-next-secondary-results-renderer,
+html.af-focus-mode #secondary,
+html.af-focus-mode #related,
+html.af-focus-mode ytd-compact-autoplay-renderer {
+  display: none !important;
+}
+
+/* Hide comments */
+
+html.af-focus-mode #comments,
+html.af-focus-mode ytd-comments {
+  display: none !important;
+}
+
+/* Hide unnecessary video information */
+
+html.af-focus-mode #merch-shelf,
+html.af-focus-mode #offer-module,
+html.af-focus-mode ytd-engagement-panel-section-list-renderer {
+  display: none !important;
+}
+
+/* Expand video area */
+
+html.af-focus-mode ytd-watch-flexy[flexy] #columns {
+  max-width: 100% !important;
+}
+
+html.af-focus-mode ytd-watch-flexy #primary {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Keep player controls visible */
+
+html.af-focus-mode #movie_player,
+html.af-focus-mode .ytp-chrome-controls,
+html.af-focus-mode .ytp-chrome-bottom,
+html.af-focus-mode .ytp-chrome-top {
+  visibility: visible !important;
+  opacity: 1;
+}
+
+/* Hide distracting homepage shelves */
+
+html.af-focus-mode ytd-browse[page-subtype="home"] ytd-rich-section-renderer,
+html.af-focus-mode ytd-browse[page-subtype="home"] ytd-shelf-renderer {
+  display: none !important;
+}
+
+/* Shorts: preserve the video and navigation */
+
+html.af-focus-mode ytd-reel-video-renderer #actions,
+html.af-focus-mode ytd-reel-video-renderer #comments-button {
+  opacity: 0.35;
+}
+
+/* Focus mode indicator */
+
+#ambient-flow-focus-indicator {
+  position: fixed;
+
+  top: 76px;
+  right: 20px;
+
+  z-index: 999999;
+
+  padding: 7px 12px;
+
+  border-radius: 20px;
+
+  background: rgba(15, 18, 25, 0.82);
+
+  color: #ffffff;
+
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+
+  pointer-events: none;
+
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+
+  opacity: 0.8;
+}
+
+/* Mobile layout */
+
+@media (max-width: 768px) {
+  html.af-focus-mode #primary {
+    width: 100% !important;
+  }
+
+  #ambient-flow-focus-indicator {
+    top: 60px;
+    right: 10px;
+  }
+}
+
+/* Reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  #ambient-flow-focus-indicator {
+    transition: none !important;
+  }
+}

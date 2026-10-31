@@ -1,0 +1,84 @@
+/* ==========================================
+   YOUTUBE AMBIENT FLOW
+   Playback-Gated Ambient Effects
+========================================== */
+
+/*
+ * All ambient effects are disabled by default.
+ * ThemeEngine adds data-af-enabled="true"
+ * only while an active ambient theme is applied.
+ */
+
+#ambient-flow-glow {
+  position: fixed !important;
+  inset: 0 !important;
+
+  width: 100% !important;
+  height: 100% !important;
+
+  pointer-events: none !important;
+
+  z-index: 0 !important;
+
+  opacity: 0 !important;
+  visibility: hidden !important;
+
+  background: none;
+
+  transition: none !important;
+
+  contain: strict !important;
+}
+
+/*
+ * The JavaScript controller explicitly manages
+ * the visibility of the glow.
+ */
+
+html[data-af-enabled="true"] #ambient-flow-glow {
+  visibility: visible !important;
+}
+
+/*
+ * Never show the glow when the extension theme
+ * is inactive or has been reset.
+ */
+
+html:not([data-af-enabled="true"]) #ambient-flow-glow {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  background: none !important;
+}
+
+/*
+ * Remove any previous pseudo-element glow.
+ * The JavaScript ambient layer is the only
+ * component responsible for ambient lighting.
+ */
+
+#movie_player::before,
+#movie_player::after {
+  content: none !important;
+  display: none !important;
+}
+
+/*
+ * Do not interfere with YouTube controls,
+ * playback interaction, or video rendering.
+ */
+
+#ambient-flow-glow,
+#ambient-flow-glow * {
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+/*
+ * Reduced motion support.
+ */
+
+@media (prefers-reduced-motion: reduce) {
+  #ambient-flow-glow {
+    transition: none !important;
+  }
+}

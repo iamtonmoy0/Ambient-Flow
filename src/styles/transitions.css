@@ -1,0 +1,113 @@
+/* ==========================================
+   YOUTUBE AMBIENT FLOW
+   Transitions and Animations
+========================================== */
+
+/* Global theme transition */
+
+html.af-theme-transition,
+html.af-theme-transition body,
+html.af-theme-transition ytd-app {
+  transition:
+    background-color var(--af-transition, 900ms) ease,
+    color var(--af-transition, 900ms) ease;
+}
+
+/* Theme surfaces */
+
+html.af-theme-transition #content,
+html.af-theme-transition #page-manager,
+html.af-theme-transition #columns,
+html.af-theme-transition #primary,
+html.af-theme-transition #secondary {
+  transition:
+    background-color var(--af-transition, 900ms) ease,
+    border-color var(--af-transition, 900ms) ease;
+}
+
+/* Cards */
+
+html.af-theme-transition ytd-rich-item-renderer,
+html.af-theme-transition ytd-video-renderer,
+html.af-theme-transition ytd-compact-video-renderer,
+html.af-theme-transition ytd-comment-thread-renderer {
+  transition:
+    background-color var(--af-transition, 900ms) ease,
+    border-color var(--af-transition, 900ms) ease,
+    box-shadow var(--af-transition, 900ms) ease;
+}
+
+/* Text */
+
+html.af-theme-transition #video-title,
+html.af-theme-transition #video-title-link,
+html.af-theme-transition #description,
+html.af-theme-transition ytd-channel-name {
+  transition: color var(--af-transition, 900ms) ease;
+}
+
+/* Ambient glow appearance */
+
+#ambient-flow-glow {
+  transition:
+    opacity var(--af-transition, 900ms) ease,
+    filter var(--af-transition, 900ms) ease;
+}
+
+/* Focus indicator */
+
+#ambient-flow-focus-indicator {
+  animation: af-focus-enter 350ms ease-out both;
+}
+
+@keyframes af-focus-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 0.8;
+    transform: translateY(0);
+  }
+}
+
+/* Avoid transitions while updating many elements */
+
+html.af-theme-updating *,
+html.af-theme-updating *::before,
+html.af-theme-updating *::after {
+  transition: none !important;
+}
+
+/* Disable animations in battery saver */
+
+html[data-af-performance="battery"] *,
+html[data-af-performance="battery"] *::before,
+html[data-af-performance="battery"] *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* Respect system reduced-motion preferences */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* User-configured reduced motion */
+
+html.af-reduced-motion *,
+html.af-reduced-motion *::before,
+html.af-reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
