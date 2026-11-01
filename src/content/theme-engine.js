@@ -9,9 +9,15 @@
 (() => {
   "use strict";
 
-  const AF = (window.AmbientFlow = window.AmbientFlow || {});
-
   const STYLE_ID = "ambient-flow-theme-generated";
+
+  function getAmbientFlow() {
+    const root = typeof window !== "undefined" ? window : globalThis;
+
+    root.AmbientFlow = root.AmbientFlow || {};
+
+    return root.AmbientFlow;
+  }
 
   const ROOT_VARIABLES = [
     "--af-primary",
@@ -29,6 +35,8 @@
 
   class ThemeEngine {
     constructor() {
+      const AF = getAmbientFlow();
+
       this.paletteEngine = AF.paletteEngine || null;
       this.gradientEngine = AF.gradientEngine || null;
       this.colorEngine = AF.colorEngine || null;
@@ -49,6 +57,7 @@
       this.isActive = false;
       this.isFrozen = false;
       this.frozenColor = null;
+      this.isDestroyed = false;
       this.destroyed = false;
 
       this.originalVariables = new Map();
@@ -404,6 +413,8 @@
           this.isFrozen = previous;
         }
       }
+
+      return true;
     }
 
     unfreeze() {
@@ -465,10 +476,17 @@
       this.styleElement = null;
 
       this.destroyed = true;
+      this.isDestroyed = true;
     }
   }
+
+  const AF = getAmbientFlow();
 
   AF.ThemeEngine = ThemeEngine;
 
   AF.themeEngine = AF.themeEngine || new ThemeEngine();
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { ThemeEngine };
+  }
 })();

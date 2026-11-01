@@ -21,8 +21,10 @@
     ambientGlow: true,
     smoothTransitions: true,
     backgroundStyle: "gradient",
+    glowIntensity: 65,
     intensity: 0.65,
     blur: 80,
+    transitionDuration: 800,
 
     performanceMode: "balanced",
 
@@ -36,6 +38,7 @@
     hideRecommendations: false,
     hideChat: true,
     hideHeader: false,
+    hideShortsControls: false,
     hideShortsSidebar: false,
 
     customColor: null,
@@ -89,6 +92,11 @@
       max: 100,
     },
 
+    glowIntensity: {
+      min: 0,
+      max: 100,
+    },
+
     intensity: {
       min: 0,
       max: 1,
@@ -97,6 +105,11 @@
     blur: {
       min: 0,
       max: 200,
+    },
+
+    transitionDuration: {
+      min: 0,
+      max: 5000,
     },
   };
 
@@ -119,6 +132,7 @@
     "hideRecommendations",
     "hideChat",
     "hideHeader",
+    "hideShortsControls",
     "hideShortsSidebar",
   ];
 
@@ -144,6 +158,35 @@
     }
 
     return isHexColor(value) ? value : null;
+  }
+
+  const LEGACY_ALIASES = {
+    intensity: "glowIntensity",
+    sampleInterval: "samplingInterval",
+    focusMode: "focusModeEnabled",
+    hideShortsSidebar: "hideShortsControls",
+  };
+
+  function normalizeIncomingSettings(settings = {}) {
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      return {};
+    }
+
+    const canonical = {};
+
+    Object.entries(settings).forEach(([key, value]) => {
+      const mapped = LEGACY_ALIASES[key] || key;
+      canonical[mapped] = value;
+    });
+
+    if (
+      Object.prototype.hasOwnProperty.call(settings, "intensity") &&
+      Object.prototype.hasOwnProperty.call(settings, "glowIntensity")
+    ) {
+      canonical.glowIntensity = settings.glowIntensity;
+    }
+
+    return canonical;
   }
 
   function normalizeValue(key, value) {
@@ -177,6 +220,7 @@
   function validate(settings = {}) {
     const errors = [];
     const normalized = {};
+    const incoming = normalizeIncomingSettings(settings);
 
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
       return {
@@ -187,9 +231,29 @@
     }
 
     for (const key of Object.keys(DEFAULTS)) {
-      const value = Object.prototype.hasOwnProperty.call(settings, key)
-        ? settings[key]
+      const value = Object.prototype.hasOwnProperty.call(incoming, key)
+        ? incoming[key]
         : DEFAULTS[key];
+
+      if (BOOLEAN_KEYS.includes(key) && value !== undefined && value !== null && typeof value !== "boolean") {
+        errors.push(`${key} must be a boolean.`);
+      }
+
+      if (RANGES[key] && value !== undefined && value !== null) {
+        const numeric = Number(value);
+
+        if (!Number.isFinite(numeric)) {
+          errors.push(`${key} must be a number.`);
+        } else if (numeric < RANGES[key].min || numeric > RANGES[key].max) {
+          errors.push(`${key} must be between ${RANGES[key].min} and ${RANGES[key].max}.`);
+        }
+      }
+
+      if (ENUMS[key] && value !== undefined && value !== null) {
+        if (!ENUMS[key].includes(value)) {
+          errors.push(`${key} must be one of: ${ENUMS[key].join(", ")}.`);
+        }
+      }
 
       if (
         COLOR_KEYS.includes(key) &&
@@ -208,6 +272,14 @@
 
     normalized.frozen = frozen;
     normalized.freezeBackground = frozen;
+
+    if (normalized.hideShortsControls === undefined) {
+      normalized.hideShortsControls = Boolean(normalized.hideShortsSidebar);
+    }
+
+    if (normalized.hideShortsSidebar === undefined) {
+      normalized.hideShortsSidebar = Boolean(normalized.hideShortsControls);
+    }
 
     return {
       valid: errors.length === 0,
@@ -297,4 +369,25 @@
     isValidKey,
     clamp,
   };
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      DEFAULTS,
+      PRESETS,
+      RANGES,
+      ENUMS,
+      validate,
+      normalize,
+      update,
+      getDefaults,
+      getPreset,
+      applyPreset,
+      getPresetNames,
+      getRanges,
+      getEnums,
+      isHexColor,
+      isValidKey,
+      clamp,
+    };
+  }
 })();

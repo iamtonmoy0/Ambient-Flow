@@ -6,16 +6,71 @@
 (() => {
   "use strict";
 
-  const AF = (window.AmbientFlow = window.AmbientFlow || {});
+  function getAmbientFlow() {
+    const root = typeof window !== "undefined" ? window : globalThis;
+
+    root.AmbientFlow = root.AmbientFlow || {};
+
+    return root.AmbientFlow;
+  }
 
   class ColorExtractor {
     constructor(options = {}) {
+      const AF = getAmbientFlow();
+
       this.enabled = true;
 
       this.sampler = AF.frameSampler || null;
       this.sceneDetector = AF.sceneDetector || null;
 
+      if (!this.sampler && typeof document !== "undefined") {
+        this.sampler = {
+          setVideo(video) {
+            this.video = video || null;
+            return true;
+          },
+          capture(video) {
+            if (!video || !video.videoWidth || !video.videoHeight) {
+              return { success: false, error: "INVALID_VIDEO" };
+            }
+
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            const context = canvas.getContext("2d");
+
+            if (!context) {
+              return { success: false, error: "CANVAS_UNAVAILABLE" };
+            }
+
+            try {
+              context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+              return {
+                success: true,
+                imageData: context.getImageData(0, 0, canvas.width, canvas.height),
+                width: canvas.width,
+                height: canvas.height,
+                timestamp: performance.now(),
+                video,
+              };
+            } catch (error) {
+              return {
+                success: false,
+                error: error?.name === "SecurityError" ? "CANVAS_BLOCKED" : "FRAME_CAPTURE_FAILED",
+                message: error?.message || "Frame capture failed.",
+                cause: error,
+              };
+            }
+          },
+        };
+      }
+
       this.sampleSize = options.sampleSize || 96;
+      this.sceneThreshold = Number.isFinite(Number(options.sceneThreshold))
+        ? Number(options.sceneThreshold)
+        : 18;
 
       this.colorHistory = [];
       this.historyLimit = 4;
@@ -43,17 +98,40 @@
       }
     }
 
+    setSceneThreshold(threshold) {
+      const next = Number(threshold);
+
+      if (!Number.isFinite(next) || next < 1 || next > 100) {
+        return false;
+      }
+
+      this.sceneThreshold = next;
+      this.sceneDetector?.setThreshold?.(next);
+
+      return this.sceneThreshold;
+    }
+
     /* ======================================
        COLOR UTILITIES
     ====================================== */
 
     rgbToHex(r, g, b) {
+      let red = r;
+      let green = g;
+      let blue = b;
+
+      if (r && typeof r === "object") {
+        red = r.r;
+        green = r.g;
+        blue = r.b;
+      }
+
       const toHex = (value) =>
-        Math.max(0, Math.min(255, Math.round(value)))
+        Math.max(0, Math.min(255, Number.isFinite(Number(value)) ? Number(value) : 0))
           .toString(16)
           .padStart(2, "0");
 
-      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+      return `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
     }
 
     hexToRgb(hex) {
@@ -249,7 +327,7 @@
        FRAME ANALYSIS
     ====================================== */
 
-    async analyze(video, options = {}) {
+    analyze(video, options = {}) {
       if (this.destroyed || !this.enabled) {
         return {
           success: false,
@@ -258,18 +336,25 @@
       }
 
       if (!video || !video.isConnected) {
-        return {
-          success: false,
-          error: "INVALID_VIDEO",
-        };
+        return false;
+      }
+
+      if (!video.videoWidth || !video.videoHeight) {
+        return false;
+      }
+
+      if (typeof video.readyState === "number" && video.readyState === 0) {
+        return false;
       }
 
       if (!this.sampler) {
-        this.sampler = AF.frameSampler;
+        const AF = getAmbientFlow();
+        this.sampler = AF.frameSampler || null;
       }
 
       if (!this.sceneDetector) {
-        this.sceneDetector = AF.sceneDetector;
+        const AF = getAmbientFlow();
+        this.sceneDetector = AF.sceneDetector || null;
       }
 
       if (!this.sampler) {
@@ -305,8 +390,6 @@
           };
         }
 
-        // Scene detection and color extraction use
-        // the exact same sampled frame.
         let scene = null;
 
         if (this.sceneDetector) {
@@ -408,6 +491,12 @@
     }
   }
 
+  const AF = getAmbientFlow();
+
   AF.ColorExtractor = ColorExtractor;
   AF.colorExtractor = new ColorExtractor();
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { ColorExtractor };
+  }
 })();
