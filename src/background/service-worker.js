@@ -265,6 +265,59 @@ async function sendToTab(tabId, message, options = {}) {
     error: "Content script unavailable.",
   };
 }
+async function injectAmbientFlow(tabId) {
+  const files = [
+    "src/shared/constants.js",
+    "src/shared/utils.js",
+    "src/shared/storage.js",
+
+    "src/engines/color-engine.js",
+    "src/engines/gradient-engine.js",
+    "src/engines/palette-engine.js",
+    "src/engines/performance-engine.js",
+
+    "src/content/video-detector.js",
+    "src/content/frame-sampler.js",
+    "src/content/scene-detector.js",
+    "src/content/color-extractor.js",
+    "src/content/theme-engine.js",
+    "src/content/readability-engine.js",
+    "src/content/ambient-glow.js",
+    "src/content/focus-mode.js",
+    "src/content/shorts-support.js",
+    "src/content/youtube-detector.js",
+    "src/content/video-analyzer.js",
+    "src/content/main.js",
+  ];
+
+  try {
+    console.info("[Ambient Flow] Injecting content scripts:", tabId);
+
+    await chrome.scripting.insertCSS({
+      target: { tabId },
+      files: [
+        "src/styles/ambient.css",
+        "src/styles/youtube-theme.css",
+        "src/styles/focus-mode.css",
+        "src/styles/transitions.css",
+      ],
+    });
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    console.info("[Ambient Flow] Content scripts injected:", tabId);
+
+    return true;
+  } catch (error) {
+    console.error("[Ambient Flow] Injection failed:", error);
+    return false;
+  }
+}
 
 /**
  * Synchronize settings with the active YouTube tab.
@@ -316,37 +369,36 @@ function createUnavailableStatus(settings = {}) {
  */
 async function getYouTubeStatus() {
   const settings = await getSettings();
-
   const tab = await getActiveYouTubeTab();
 
   if (!tab) {
-    console.info("[Ambient Flow] No active YouTube tab.");
-
     return createUnavailableStatus(settings);
   }
 
-  console.info("[Ambient Flow] Requesting video status:", {
-    tabId: tab.id,
-    url: tab.url,
-  });
-
-  const result = await sendToTab(
+  let result = await sendToTab(
     tab.id,
-    {
-      type: MESSAGE_TYPES.GET_STATUS,
-    },
-    {
-      retries: 1,
-      retryDelay: 300,
-    },
+    { type: MESSAGE_TYPES.GET_STATUS },
+    { retries: 1, retryDelay: 300 },
   );
 
+  // Recover if the content script is missing.
   if (!result.success) {
     console.warn(
-      "[Ambient Flow] Unable to retrieve YouTube status:",
-      result.error,
+      "[Ambient Flow] Content script unavailable. Attempting recovery.",
     );
 
+    const injected = await injectAmbientFlow(tab.id);
+
+    if (injected) {
+      result = await sendToTab(
+        tab.id,
+        { type: MESSAGE_TYPES.GET_STATUS },
+        { retries: 3, retryDelay: 500 },
+      );
+    }
+  }
+
+  if (!result.success) {
     return {
       ...createUnavailableStatus(settings),
       available: false,
@@ -360,24 +412,17 @@ async function getYouTubeStatus() {
     return {
       ...createUnavailableStatus(settings),
       available: false,
-      connectionError: response?.error || "Invalid content script response.",
+      connectionError: response?.error || "Invalid response.",
     };
   }
 
-  // Content script normally responds:
-  // { success: true, status: {...} }
-  //
-  // Also support a flattened response.
   const status = response.status || response;
 
   return {
     ...createUnavailableStatus(settings),
     ...status,
-
-    available: typeof status.available === "boolean" ? status.available : true,
-
-    enabled:
-      typeof status.enabled === "boolean" ? status.enabled : settings.enabled,
+    available: status.available !== false,
+    enabled: status.enabled ?? settings.enabled,
   };
 }
 

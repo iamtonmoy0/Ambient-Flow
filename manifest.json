@@ -4,7 +4,9 @@
   "short_name": "Ambient Flow",
   "version": "1.0.0",
   "description": "Transform YouTube with intelligent video-inspired backgrounds, ambient lighting, and cinematic themes.",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "scripting"],
+
+  "host_permissions": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
   "background": {
     "service_worker": "src/background/service-worker.js"
   },
