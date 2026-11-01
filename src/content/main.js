@@ -421,18 +421,56 @@
     }
 
     getStatus() {
+      const analyzer = this.analyzer?.getStatus?.() || {};
+      const stats = analyzer.stats || {};
+      const video = this.analyzer?.video || null;
+
+      const hasVideo = Boolean(
+        video && video.isConnected && analyzer.videoConnected,
+      );
+
+      const isPlaying = Boolean(
+        hasVideo && !analyzer.paused && !analyzer.ended,
+      );
+
       return {
+        success: true,
+
+        // Popup-compatible status
+        available: true,
         initialized: this.initialized,
-        destroyed: this.destroyed,
-        settings: this.settings,
-        focusSettings: this.focusSettings,
-        analyzer: this.analyzer?.getStatus?.() || null,
+        enabled: analyzer.enabled ?? this.settings.enabled ?? true,
+
+        hasVideo,
+        isPlaying,
+        isPaused: hasVideo && Boolean(analyzer.paused),
+        isEnded: Boolean(analyzer.ended),
+        isBlocked: Boolean(analyzer.canvasBlocked),
+
+        analysisActive: Boolean(analyzer.running),
+
+        videoTitle: hasVideo ? document.title : "No active video",
+
+        currentColor: stats.lastColor || null,
+
+        performance: {
+          currentInterval: analyzer.samplingInterval || 700,
+          sceneChanges: stats.sceneChanges || 0,
+          samples: stats.samples || 0,
+          successfulSamples: stats.successfulSamples || 0,
+        },
+
+        // Preserve detailed diagnostic information
+        analyzer,
         focusMode: this.focusMode?.getStatus?.() || null,
         theme: this.analyzer?.themeEngine?.getStatus?.() || null,
+
+        settings: this.settings,
+        focusSettings: this.focusSettings,
       };
     }
 
-    async handleRuntimeMessage(message, sender, sendResponse) {
+    handleRuntimeMessage(message, sender, sendResponse) {
       if (!message || typeof message.type !== "string") {
         return false;
       }
@@ -520,7 +558,7 @@
 
         case "c":
           event.preventDefault();
-          this.resetTheme();
+          this.freezeBackground();
           break;
 
         default:

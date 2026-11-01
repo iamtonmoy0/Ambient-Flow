@@ -282,22 +282,65 @@
     try {
       const response = await sendMessage(MESSAGE_TYPES.GET_STATUS);
 
-      if (response) {
-        renderStatus(response);
+      if (!response) {
+        throw new Error("Empty status response");
       }
 
-      return response;
+      // Handle service-worker and content-controller response structures.
+      const controllerStatus = response.status || response;
+      const analyzer = controllerStatus.analyzer || {};
+
+      const normalizedStatus = {
+        enabled:
+          controllerStatus.enabled ?? analyzer.enabled ?? settings.enabled,
+
+        hasVideo: controllerStatus.hasVideo ?? analyzer.videoConnected ?? false,
+
+        isPlaying:
+          controllerStatus.isPlaying ??
+          (analyzer.videoConnected && !analyzer.paused && !analyzer.ended),
+
+        isPaused: controllerStatus.isPaused ?? analyzer.paused ?? false,
+
+        isEnded: controllerStatus.isEnded ?? analyzer.ended ?? false,
+
+        isBlocked:
+          controllerStatus.isBlocked ?? analyzer.canvasBlocked ?? false,
+
+        analysisActive:
+          controllerStatus.analysisActive ?? analyzer.running ?? false,
+
+        videoTitle: controllerStatus.videoTitle || document.title,
+
+        currentColor:
+          controllerStatus.currentColor || analyzer.stats?.lastColor || null,
+
+        performance: controllerStatus.performance || {
+          currentInterval: analyzer.samplingInterval || 700,
+          sceneChanges: analyzer.stats?.sceneChanges || 0,
+          samples: analyzer.stats?.samples || 0,
+        },
+
+        palette: controllerStatus.palette,
+      };
+
+      renderStatus(normalizedStatus);
+
+      return normalizedStatus;
     } catch (error) {
+      console.error("[AmbientFlow] Status request failed:", error);
+
       renderStatus({
         enabled: settings.enabled,
-        isPlaying: false,
         hasVideo: false,
+        isPlaying: false,
+        isPaused: false,
+        analysisActive: false,
       });
 
       return null;
     }
   }
-
   async function updateSetting(key, value) {
     clearError();
 
