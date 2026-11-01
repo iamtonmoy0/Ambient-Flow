@@ -69,13 +69,23 @@ function isYouTubeUrl(url) {
 
     return (
       parsed.protocol === "https:" &&
-      (parsed.hostname === "youtube.com" ||
-        parsed.hostname === "www.youtube.com" ||
-        parsed.hostname === "m.youtube.com")
+      ["youtube.com", "www.youtube.com", "m.youtube.com"].includes(
+        parsed.hostname,
+      )
     );
   } catch {
     return false;
   }
+}
+
+function clamp(value, min, max, fallback) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.max(min, Math.min(max, number));
 }
 
 function normalizeSettings(settings = {}) {
@@ -112,12 +122,10 @@ function normalizeSettings(settings = {}) {
 
   result.sampleInterval = result.samplingInterval;
 
-  // Validate performance mode.
   if (!["battery", "balanced", "quality"].includes(result.performanceMode)) {
     result.performanceMode = "balanced";
   }
 
-  // Validate numeric settings.
   result.samplingInterval = clamp(result.samplingInterval, 350, 4000, 700);
 
   result.sampleInterval = result.samplingInterval;
@@ -131,16 +139,6 @@ function normalizeSettings(settings = {}) {
   return result;
 }
 
-function clamp(value, min, max, fallback) {
-  const number = Number(value);
-
-  if (!Number.isFinite(number)) {
-    return fallback;
-  }
-
-  return Math.max(min, Math.min(max, number));
-}
-
 /* ==========================================
    STORAGE HELPERS
 ========================================== */
@@ -151,9 +149,7 @@ async function getSettings() {
 
     const stored = result[SETTINGS_KEY] || {};
 
-    const normalized = normalizeSettings(stored);
-
-    return normalized;
+    return normalizeSettings(stored);
   } catch (error) {
     console.error("[Ambient Flow] Settings read failed:", error);
 
@@ -184,48 +180,89 @@ async function saveSettings(updates = {}) {
    TAB HELPERS
 ========================================== */
 
+/**
+ * Get the active YouTube tab in the last-focused
+ * browser window.
+ */
 async function getActiveYouTubeTab() {
   try {
-    const tabs = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
+    const lastFocusedWindow = await chrome.windows.getLastFocused({
+      populate: false,
     });
 
-    const tab = tabs?.[0];
-
-    if (!tab || tab.id === undefined || !isYouTubeUrl(tab.url)) {
+    if (!lastFocusedWindow?.id) {
       return null;
     }
 
-    return tab;
+    const tabs = await chrome.tabs.query({
+      active: true,
+      windowId: lastFocusedWindow.id,
+    });
+
+    const youtubeTab = tabs.find((tab) =>
+      isYouTubeUrl(tab.url || tab.pendingUrl),
+    );
+
+    return youtubeTab || null;
   } catch (error) {
-    console.error("[Ambient Flow] Could not find active tab:", error);
+    console.error("[Ambient Flow] Failed to find active YouTube tab:", error);
 
     return null;
   }
 }
 
-async function sendToTab(tabId, message) {
-  try {
-    const response = await chrome.tabs.sendMessage(tabId, message);
+/**
+ * Send a message to a content script.
+ *
+ * Retries once when the content script is temporarily
+ * unavailable. It does not retry arbitrary message errors.
+ */
+async function sendToTab(tabId, message, options = {}) {
+  const retries = options.retries ?? 1;
+  const retryDelay = options.retryDelay ?? 300;
 
-    return {
-      success: true,
-      response,
-    };
-  } catch (error) {
-    console.warn(
-      "[Ambient Flow] Content script communication failed:",
-      error.message,
-    );
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, message);
 
-    return {
-      success: false,
-      error: "Content script unavailable.",
-    };
+      return {
+        success: true,
+        response,
+      };
+    } catch (error) {
+      const errorMessage = error?.message || String(error);
+
+      console.warn("[Ambient Flow] Content script communication failed:", {
+        tabId,
+        messageType: message?.type,
+        attempt: attempt + 1,
+        error: errorMessage,
+      });
+
+      const isMissingReceiver =
+        errorMessage.includes("Receiving end does not exist") ||
+        errorMessage.includes("Could not establish connection");
+
+      if (!isMissingReceiver || attempt >= retries) {
+        return {
+          success: false,
+          error: errorMessage,
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    }
   }
+
+  return {
+    success: false,
+    error: "Content script unavailable.",
+  };
 }
 
+/**
+ * Synchronize settings with the active YouTube tab.
+ */
 async function sendSettingsToActiveTab(settings) {
   const tab = await getActiveYouTubeTab();
 
@@ -268,39 +305,70 @@ function createUnavailableStatus(settings = {}) {
   };
 }
 
+/**
+ * Retrieve the actual status from the YouTube content script.
+ */
 async function getYouTubeStatus() {
   const settings = await getSettings();
 
   const tab = await getActiveYouTubeTab();
 
   if (!tab) {
+    console.info("[Ambient Flow] No active YouTube tab.");
+
     return createUnavailableStatus(settings);
   }
 
-  const result = await sendToTab(tab.id, {
-    type: MESSAGE_TYPES.GET_STATUS,
+  console.info("[Ambient Flow] Requesting video status:", {
+    tabId: tab.id,
+    url: tab.url,
   });
 
+  const result = await sendToTab(
+    tab.id,
+    {
+      type: MESSAGE_TYPES.GET_STATUS,
+    },
+    {
+      retries: 1,
+      retryDelay: 300,
+    },
+  );
+
   if (!result.success) {
+    console.warn(
+      "[Ambient Flow] Unable to retrieve YouTube status:",
+      result.error,
+    );
+
     return {
       ...createUnavailableStatus(settings),
-      available: true,
+      available: false,
       connectionError: result.error,
     };
   }
 
   const response = result.response;
 
-  // Support both response formats:
-  // { status: {...} }
-  // { isPlaying: true, hasVideo: true, ... }
-  const status = response?.status || response || {};
+  if (!response || response.success === false) {
+    return {
+      ...createUnavailableStatus(settings),
+      available: false,
+      connectionError: response?.error || "Invalid content script response.",
+    };
+  }
+
+  // Content script normally responds:
+  // { success: true, status: {...} }
+  //
+  // Also support a flattened response.
+  const status = response.status || response;
 
   return {
     ...createUnavailableStatus(settings),
     ...status,
 
-    available: true,
+    available: typeof status.available === "boolean" ? status.available : true,
 
     enabled:
       typeof status.enabled === "boolean" ? status.enabled : settings.enabled,
@@ -324,7 +392,6 @@ function respond(sendResponse, data) {
 ========================================== */
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Ignore messages without a valid type.
   if (!message || typeof message.type !== "string") {
     return false;
   }
@@ -332,9 +399,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
       switch (message.type) {
-        /* -------------------------------
-             GET SETTINGS
-          -------------------------------- */
+        /* GET SETTINGS */
 
         case MESSAGE_TYPES.GET_SETTINGS: {
           const settings = await getSettings();
@@ -347,9 +412,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             UPDATE SETTINGS
-          -------------------------------- */
+        /* UPDATE SETTINGS */
 
         case MESSAGE_TYPES.UPDATE_SETTINGS: {
           const updates = message.settings || {};
@@ -376,15 +439,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             GET STATUS
-          -------------------------------- */
+        /* GET STATUS */
 
         case MESSAGE_TYPES.GET_STATUS: {
           const status = await getYouTubeStatus();
 
-          // Return both flattened and nested status.
-          // This supports different popup implementations.
           respond(sendResponse, {
             success: true,
             ...status,
@@ -394,9 +453,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             TOGGLE AMBIENT FLOW
-          -------------------------------- */
+        /* TOGGLE AMBIENT FLOW */
 
         case MESSAGE_TYPES.TOGGLE_AMBIENT_FLOW: {
           const current = await getSettings();
@@ -431,9 +488,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             TOGGLE FOCUS MODE
-          -------------------------------- */
+        /* TOGGLE FOCUS MODE */
 
         case MESSAGE_TYPES.TOGGLE_FOCUS_MODE: {
           const current = await getSettings();
@@ -469,9 +524,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             FREEZE BACKGROUND
-          -------------------------------- */
+        /* FREEZE BACKGROUND */
 
         case MESSAGE_TYPES.FREEZE_BACKGROUND: {
           const current = await getSettings();
@@ -515,9 +568,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             SET CUSTOM COLOR
-          -------------------------------- */
+        /* SET CUSTOM COLOR */
 
         case MESSAGE_TYPES.SET_CUSTOM_COLOR: {
           const color = message.color;
@@ -554,9 +605,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             RESET THEME
-          -------------------------------- */
+        /* RESET THEME */
 
         case MESSAGE_TYPES.RESET_THEME: {
           const settings = await saveSettings({
@@ -585,9 +634,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        /* -------------------------------
-             UNKNOWN MESSAGE
-          -------------------------------- */
+        /* UNKNOWN MESSAGE */
 
         default: {
           respond(sendResponse, {
@@ -658,21 +705,30 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     return;
   }
 
-  const settings = await getSettings();
+  try {
+    const settings = await getSettings();
 
-  console.info(
-    "[Ambient Flow] YouTube tab loaded:",
-    tabId,
-    "Enabled:",
-    settings.enabled,
-  );
+    console.info(
+      "[Ambient Flow] YouTube tab loaded:",
+      tabId,
+      "Enabled:",
+      settings.enabled,
+    );
 
-  // Content scripts normally load through manifest.json.
-  // Send settings after the page has finished loading.
-  await sendToTab(tabId, {
-    type: MESSAGE_TYPES.UPDATE_SETTINGS,
-    settings,
-  });
+    const result = await sendToTab(tabId, {
+      type: MESSAGE_TYPES.UPDATE_SETTINGS,
+      settings,
+    });
+
+    if (!result.success) {
+      console.warn(
+        "[Ambient Flow] Initial settings sync failed:",
+        result.error,
+      );
+    }
+  } catch (error) {
+    console.error("[Ambient Flow] YouTube tab synchronization failed:", error);
+  }
 });
 
 /* ==========================================
@@ -683,14 +739,20 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {
     const tab = await chrome.tabs.get(tabId);
 
-    if (!isYouTubeUrl(tab.url)) return;
+    if (!isYouTubeUrl(tab.url)) {
+      return;
+    }
 
     const settings = await getSettings();
 
-    await sendToTab(tabId, {
+    const result = await sendToTab(tabId, {
       type: MESSAGE_TYPES.UPDATE_SETTINGS,
       settings,
     });
+
+    if (!result.success) {
+      console.warn("[Ambient Flow] Tab activation sync failed:", result.error);
+    }
   } catch (error) {
     console.warn("[Ambient Flow] Tab activation sync failed:", error.message);
   }
@@ -703,7 +765,9 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 chrome.commands.onCommand.addListener(async (command) => {
   const tab = await getActiveYouTubeTab();
 
-  if (!tab) return;
+  if (!tab) {
+    return;
+  }
 
   if (command === "toggle-ambient-flow") {
     const settings = await getSettings();
