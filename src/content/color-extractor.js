@@ -49,7 +49,12 @@
 
               return {
                 success: true,
-                imageData: context.getImageData(0, 0, canvas.width, canvas.height),
+                imageData: context.getImageData(
+                  0,
+                  0,
+                  canvas.width,
+                  canvas.height,
+                ),
                 width: canvas.width,
                 height: canvas.height,
                 timestamp: performance.now(),
@@ -58,7 +63,10 @@
             } catch (error) {
               return {
                 success: false,
-                error: error?.name === "SecurityError" ? "CANVAS_BLOCKED" : "FRAME_CAPTURE_FAILED",
+                error:
+                  error?.name === "SecurityError"
+                    ? "CANVAS_BLOCKED"
+                    : "FRAME_CAPTURE_FAILED",
                 message: error?.message || "Frame capture failed.",
                 cause: error,
               };
@@ -126,10 +134,15 @@
         blue = r.b;
       }
 
-      const toHex = (value) =>
-        Math.max(0, Math.min(255, Number.isFinite(Number(value)) ? Number(value) : 0))
-          .toString(16)
-          .padStart(2, "0");
+      const toHex = (value) => {
+        const number = Number(value);
+
+        const safeValue = Number.isFinite(number)
+          ? Math.max(0, Math.min(255, Math.round(number)))
+          : 0;
+
+        return safeValue.toString(16).padStart(2, "0");
+      };
 
       return `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
     }

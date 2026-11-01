@@ -186,24 +186,30 @@ async function saveSettings(updates = {}) {
  */
 async function getActiveYouTubeTab() {
   try {
-    const lastFocusedWindow = await chrome.windows.getLastFocused({
-      populate: false,
-    });
-
-    if (!lastFocusedWindow?.id) {
-      return null;
-    }
-
+    // Find active tabs across browser windows.
     const tabs = await chrome.tabs.query({
       active: true,
-      windowId: lastFocusedWindow.id,
     });
 
-    const youtubeTab = tabs.find((tab) =>
+    // Keep only YouTube tabs.
+    const youtubeTabs = tabs.filter((tab) =>
       isYouTubeUrl(tab.url || tab.pendingUrl),
     );
 
-    return youtubeTab || null;
+    if (youtubeTabs.length === 0) {
+      console.warn(
+        "[Ambient Flow] No active YouTube tab found.",
+        tabs.map((tab) => ({
+          id: tab.id,
+          url: tab.url,
+          windowId: tab.windowId,
+        })),
+      );
+
+      return null;
+    }
+
+    return youtubeTabs[0];
   } catch (error) {
     console.error("[Ambient Flow] Failed to find active YouTube tab:", error);
 

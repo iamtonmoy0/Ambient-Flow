@@ -8,6 +8,7 @@
 
 (() => {
   "use strict";
+  console.log("[AmbientFlow] main.js content script loaded:", location.href);
 
   const AF = (window.AmbientFlow = window.AmbientFlow || {});
 
