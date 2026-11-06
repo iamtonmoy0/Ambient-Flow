@@ -1,0 +1,170 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 320px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0f0f14;
+  color: #e8e8ee;
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c5cff, #ff5cad);
+  box-shadow: 0 0 12px rgba(124, 92, 255, 0.7);
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 24px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #2a2a35;
+  border-radius: 24px;
+  transition: 0.25s;
+}
+
+.slider::before {
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: 0.25s;
+}
+
+input:checked + .slider {
+  background: linear-gradient(135deg, #7c5cff, #ff5cad);
+}
+
+input:checked + .slider::before {
+  transform: translateX(18px);
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.toggle-btn {
+  padding: 9px;
+  background: #1c1c26;
+  color: #d0d0dc;
+  border: 1px solid #2c2c3a;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: 0.2s;
+}
+
+.toggle-btn:hover {
+  background: #252534;
+}
+.toggle-btn.active {
+  background: linear-gradient(135deg, #7c5cff, #ff5cad);
+  color: #fff;
+  border-color: transparent;
+}
+
+.group {
+  margin-bottom: 12px;
+}
+
+.group label {
+  display: block;
+  font-size: 11px;
+  color: #8a8a9a;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.group select {
+  width: 100%;
+  padding: 8px;
+  background: #1c1c26;
+  color: #e8e8ee;
+  border: 1px solid #2c2c3a;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.group input[type="range"] {
+  width: 100%;
+  accent-color: #7c5cff;
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #2c2c3a;
+}
+
+.secondary {
+  padding: 6px 14px;
+  background: transparent;
+  color: #8a8a9a;
+  border: 1px solid #2c2c3a;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.secondary:hover {
+  color: #e8e8ee;
+  border-color: #4a4a5a;
+}
+
+.hint {
+  font-size: 9px;
+  color: #5a5a6a;
+  text-align: right;
+  max-width: 150px;
+}

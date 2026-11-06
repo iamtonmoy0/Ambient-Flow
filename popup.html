@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ambient Flow</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="logo">
+        <span class="dot"></span>
+        <h1>Ambient Flow</h1>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="enabled" checked />
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <section class="controls">
+      <button id="focusBtn" class="toggle-btn">Focus Mode</button>
+      <button id="freezeBtn" class="toggle-btn">Freeze</button>
+    </section>
+
+    <section class="group">
+      <label>Viewing Mode</label>
+      <select id="mode">
+        <option value="cinematic">Cinematic</option>
+        <option value="minimal">Minimal</option>
+        <option value="vibrant">Vibrant</option>
+        <option value="relax">Relax</option>
+      </select>
+    </section>
+
+    <section class="group">
+      <label>Performance</label>
+      <select id="performance">
+        <option value="high">High</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="battery">Battery Saver</option>
+      </select>
+    </section>
+
+    <section class="group">
+      <label>Background Style</label>
+      <select id="backgroundStyle">
+        <option value="gradient">Gradient</option>
+        <option value="solid">Solid</option>
+        <option value="transparent">Transparent</option>
+      </select>
+    </section>
+
+    <section class="group">
+      <label>Glow Intensity</label>
+      <input
+        type="range"
+        id="glowIntensity"
+        min="0"
+        max="1.5"
+        step="0.05"
+        value="0.6"
+      />
+    </section>
+
+    <section class="group">
+      <label>Glow Blur</label>
+      <input type="range" id="glowBlur" min="0" max="200" step="5" value="80" />
+    </section>
+
+    <footer>
+      <button id="resetBtn" class="secondary">Reset</button>
+      <span class="hint">Alt+Shift+A toggle · F focus · C freeze</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
