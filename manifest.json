@@ -37,7 +37,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
       "js": [
         "src/shared/constants.js",
         "src/shared/utils.js",

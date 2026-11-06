@@ -28,7 +28,7 @@
     opacity 400ms ease,
     background 400ms ease;
 
-  contain: strict !important;
+  contain: none !important;
   user-select: none !important;
 }
 

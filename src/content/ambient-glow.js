@@ -263,14 +263,16 @@
      * Update glow dimensions to match the actual YouTube player.
      */
     updatePosition() {
-      if (!this.element) return;
+      if (!this.element) return false;
 
-      const player = document.querySelector("#movie_player");
-      if (!player) return;
+      const player = this.getPlayer();
+      if (!player) return false;
 
       const rect = player.getBoundingClientRect();
 
-      if (!rect.width || !rect.height) return;
+      if (!rect.width || !rect.height) return false;
+
+      this.observePlayer(player);
 
       const style = this.element.style;
 
@@ -286,6 +288,8 @@
       style.setProperty("z-index", "1", "important");
 
       style.setProperty("pointer-events", "none", "important");
+
+      return true;
     }
     /**
      * Observe player size changes.
