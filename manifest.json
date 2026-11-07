@@ -3,7 +3,7 @@
   "name": "YouTube Ambient Flow",
   "version": "1.0.0",
   "description": "Turn YouTube into an immersive, cinematic viewing experience with dynamic ambient colors.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab"],
   "host_permissions": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
   "action": {
     "default_popup": "popup.html"
